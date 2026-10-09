@@ -1,0 +1,13 @@
+companion/etsmap.bin
+companion/etsmap.meta.json
+companion/__pycache__/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+companion/rb_debug.json
+companion/companion.log
+companion/_speaker.ps1
+*.apk.zip
+*.pyc
