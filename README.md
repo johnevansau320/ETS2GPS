@@ -106,3 +106,8 @@ Pinch / +/- to zoom, double-tap resets zoom.
 Map parsing is a Python port of the file-format knowledge in the MIT-licensed
 [ts-map](https://github.com/dariowouters/ts-map) project.
 
+
+## License
+
+MIT - see [LICENSE](LICENSE). ETS2 / Euro Truck Simulator 2 is a trademark of SCS Software; this project is not affiliated with or endorsed by SCS Software. No game data is distributed: the map is built locally from your own installation.
+
