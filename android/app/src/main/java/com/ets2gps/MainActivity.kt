@@ -112,6 +112,13 @@ class MainActivity : Activity() {
     private var place = ""
     private var routeEtaGameMin = -1f
     private val avoidPoints = ArrayList<Pair<Float, Float>>()
+
+    /** An intermediate stop on the way to the final destination (destX/destZ). */
+    private class Stop(val x: Float, val z: Float, val name: String)
+    private val waypoints = ArrayList<Stop>()
+    private val resumeStops = ArrayList<Stop>() // waypoints set aside while a POI detour is active
+    private var afterM = 0f // distance / time of the legs after the one being driven
+    private var afterS = 0f
     private var paceRatio = 1f // actual speed / speed the router assumed, smoothed (~90 s)
     private var lastPaceMs = 0L
 
@@ -326,6 +333,7 @@ class MainActivity : Activity() {
         menuButton(tripBtn)
         menu.addView(View(this), LinearLayout.LayoutParams(dp(88), dp(10)))
         menuButton(button("Search") { showSearch() })
+        menuButton(button("Stops") { showStops() })
         modeBtn = button("Heavy") { cycleRouteMode() }
         menuButton(modeBtn)
         updateModeButton()
@@ -512,11 +520,23 @@ class MainActivity : Activity() {
         mapView.routeIdx = n.currentIndex
         mapView.nextManeuver = st.next
         if (st.speech != null) voice.say(st.speech)
+        if (st.arrived && waypoints.isNotEmpty()) {
+            val wp = waypoints.removeAt(0)
+            n.clear()
+            syncStops()
+            val nextName = waypoints.firstOrNull()?.name ?: destName
+            voice.say("Waypoint reached. Continuing to $nextName")
+            toast("Waypoint reached: ${wp.name}")
+            computeRoute(destX, destZ, destName, announce = false, reroute = true)
+            return
+        }
         if (st.arrived && resumeSet) {
             resumeSet = false
             n.clear()
             voice.say("Back on route to $resumeName")
-            computeRoute(resumeX, resumeZ, resumeName, announce = false)
+            waypoints.clear(); waypoints.addAll(resumeStops); resumeStops.clear()
+            syncStops()
+            computeRoute(resumeX, resumeZ, resumeName, announce = false, keepStops = true)
             return
         }
         if (st.arrived) {
@@ -529,14 +549,17 @@ class MainActivity : Activity() {
         }
         val next = st.next
         lastNextText = if (next != null) (n.instruction(next) + " in " + n.shortDistance(st.distToNextM) + (next.towards?.let { " towards $it" } ?: "")) else ""
-        routeRemainingM = st.remainingM
+        val totM = st.remainingM + afterM
+        val totS = st.remainingS + afterS
+        routeRemainingM = totM
         if (next != null) banner.setManeuver(next, n.shortDistance(st.distToNextM), n.instruction(next).replaceFirstChar { it.uppercase() } + (next.towards?.let { " towards $it" } ?: ""), st.following)
         updatePace(n)
-        val realMin = st.remainingS / paceRatio / 60f // real-world minutes at your actual pace
+        val realMin = totS / paceRatio / 60f // real-world minutes at your actual pace
         val gameMin = realMin * TIME_SCALE // the same trip on the in-game clock
         routeEtaGameMin = gameMin
         val clock = etaClock(gameMin)
-        infoText.text = "$destName\n${n.shortDistance(st.remainingM)} · Real ${formatDuration(realMin)} · Sim ${formatDuration(gameMin)}" +
+        val label = if (waypoints.isEmpty()) destName else "$destName (via ${waypoints.size} stop${if (waypoints.size > 1) "s" else ""}, next: ${waypoints[0].name})"
+        infoText.text = "$label\n${n.shortDistance(totM)} · Real ${formatDuration(realMin)} · Sim ${formatDuration(gameMin)}" +
             (if (clock.isNotEmpty()) " · Arrive $clock" else "")
         if (st.offRoute) rerouteIfNeeded()
     }
@@ -587,6 +610,7 @@ class MainActivity : Activity() {
 
     private fun cancelRoute() {
         resumeSet = false; destIsPoi = false
+        waypoints.clear(); resumeStops.clear(); afterM = 0f; afterS = 0f; syncStops()
         nav?.clear()
         routeEtaGameMin = -1f
         routeRemainingM = -1f
@@ -598,20 +622,33 @@ class MainActivity : Activity() {
         infoText.text = "No route"
     }
 
-    private fun computeRoute(x: Float, z: Float, name: String, announce: Boolean, isPoi: Boolean = false, reroute: Boolean = false) {
+    private fun computeRoute(x: Float, z: Float, name: String, announce: Boolean, isPoi: Boolean = false, reroute: Boolean = false, keepStops: Boolean = false) {
         val r = router; val n = nav; val m = map
         if (r == null || n == null || m == null) { toast("Map not loaded yet"); return }
         if (truck?.connected != true) { toast("Start the game first - no truck position yet"); return }
         if (!routing.compareAndSet(false, true)) return
         if (!reroute) {
             if (isPoi) {
-                if (hasDest && !destIsPoi) { resumeSet = true; resumeX = destX; resumeZ = destZ; resumeName = destName }
-            } else resumeSet = false
+                if (hasDest && !destIsPoi) {
+                    resumeSet = true; resumeX = destX; resumeZ = destZ; resumeName = destName
+                    resumeStops.clear(); resumeStops.addAll(waypoints)
+                }
+                waypoints.clear()
+            } else {
+                resumeSet = false
+                if (!keepStops) waypoints.clear()
+            }
             destIsPoi = isPoi
         }
         destX = x; destZ = z; destName = name; hasDest = true
+        syncStops()
+        // the leg being driven ends at the next waypoint, or at the destination when none are left
+        val leg = waypoints.firstOrNull()
+        val tx = leg?.x ?: x; val tz = leg?.z ?: z; val tname = leg?.name ?: name
+        val chain = waypoints.drop(1).map { Pair(it.x, it.z) } + Pair(x, z) // the legs after this one
+        val legIsStop = leg != null
         val sx = motion.x; val sz = motion.z; val brg = motion.bearing
-        if (announce) banner.setMessage("Calculating route to $name...")
+        if (announce) banner.setMessage("Calculating route to $tname...")
         bg.execute {
             try {
                 val snap = r.snap(sx, sz, brg, 60f) ?: r.snap(sx, sz, null, 200f)
@@ -619,11 +656,21 @@ class MainActivity : Activity() {
                     ui.post { banner.setMessage("You are not on a known road") }
                     return@execute
                 }
-                val node = r.nearestMainNode(x, z)
+                val node = r.nearestMainNode(tx, tz)
                 if (node < 0) { ui.post { banner.setMessage("Destination is not reachable by road") }; return@execute }
                 val remaining = (m.eLen[snap.de shr 1] - snap.along).coerceAtLeast(1f)
                 val res = r.route(snap.de, remaining, node)
                 if (res == null) { ui.post { banner.setMessage("No route found") }; return@execute }
+                // length / time of the remaining legs (waypoint to waypoint, then to the destination)
+                var am = 0f; var asec = 0f; var prev = node
+                if (legIsStop) for ((cx, cz) in chain) {
+                    val nn = r.nearestMainNode(cx, cz)
+                    if (nn < 0 || nn == prev || r.outCount(prev) == 0) continue
+                    val ide = r.outAt(prev, 0)
+                    val rr = r.route(ide, m.eLen[ide shr 1], nn)
+                    if (rr != null) { am += rr.lengthM; asec += rr.timeS }
+                    prev = nn
+                }
                 // flatten the route geometry for drawing
                 var total = 0
                 for (de in res.edges) total += m.deCount(de)
@@ -638,11 +685,13 @@ class MainActivity : Activity() {
                 }
                 ui.post {
                     n.distScale = distScale
+                    n.arriveWord = if (legIsStop) "your waypoint" else "your destination"
+                    afterM = am; afterS = asec
                     n.setRoute(res, remaining)
                     mapView.routePts = pts; mapView.routeEdgePt = starts; mapView.routeIdx = 0
                     banner.setMessage(null)
                     if (announce) {
-                        voice.say("Route to $name. ${n.spokenDistance(res.lengthM)}. ${routeMode.label} routing.")
+                        voice.say(if (legIsStop) "Route to $tname, the first of ${waypoints.size + 1} stops. ${n.spokenDistance(res.lengthM)}. ${routeMode.label} routing." else "Route to $name. ${n.spokenDistance(res.lengthM)}. ${routeMode.label} routing.")
                     }
                     navTick()
                 }
@@ -1100,10 +1149,64 @@ class MainActivity : Activity() {
     }
 
     private fun confirmDestination(x: Float, z: Float) {
+        val canStop = hasDest && nav?.active == true
+        val items = if (canStop) arrayOf("Navigate here", "Add as waypoint", "Avoid road here") else arrayOf("Navigate here", "Avoid road here")
         AlertDialog.Builder(this)
             .setTitle("This point on the map")
-            .setPositiveButton("Navigate here") { _, _ -> computeRoute(x, z, "Selected point", announce = true) }
-            .setNeutralButton("Avoid road here") { _, _ -> avoidRoadAt(x, z) }
+            .setItems(items) { _, i ->
+                when (items[i]) {
+                    "Navigate here" -> computeRoute(x, z, "Selected point", announce = true)
+                    "Add as waypoint" -> addWaypoint(x, z, "Selected point")
+                    else -> avoidRoadAt(x, z)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // ------------------------------------------------------------------------- waypoints --
+
+    private fun syncStops() {
+        mapView.stops = FloatArray(waypoints.size * 2) { if (it % 2 == 0) waypoints[it / 2].x else waypoints[it / 2].z }
+        mapView.invalidate()
+    }
+
+    private fun addWaypoint(x: Float, z: Float, name: String) {
+        if (!hasDest) { toast("Create a route first, then add waypoints"); return }
+        if (routing.get()) { toast("Still planning - try again in a moment"); return }
+        waypoints.add(Stop(x, z, name))
+        syncStops()
+        toast("Waypoint ${waypoints.size} added: $name")
+        voice.say("Waypoint added: $name")
+        rerouteForModeChange()
+    }
+
+    private fun showStops() {
+        if (!hasDest) { toast("Create a route with Search first, then add waypoints here"); return }
+        val names = waypoints.mapIndexed { i, w -> "${i + 1}. ${w.name}" } + "Destination: $destName"
+        AlertDialog.Builder(this)
+            .setTitle("Route stops")
+            .setItems(names.toTypedArray()) { _, i -> if (i < waypoints.size) stopOptions(i) }
+            .setPositiveButton("Add waypoint") { _, _ -> showSearch(true) }
+            .setNeutralButton("Clear waypoints") { _, _ -> waypoints.clear(); syncStops(); rerouteForModeChange() }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun stopOptions(i: Int) {
+        val w = waypoints.getOrNull(i) ?: return
+        val items = arrayOf("Remove", "Move earlier", "Move later")
+        AlertDialog.Builder(this)
+            .setTitle(w.name)
+            .setItems(items) { _, k ->
+                when (k) {
+                    0 -> waypoints.removeAt(i)
+                    1 -> if (i > 0) { waypoints.removeAt(i); waypoints.add(i - 1, w) }
+                    2 -> if (i < waypoints.size - 1) { waypoints.removeAt(i); waypoints.add(i + 1, w) }
+                }
+                syncStops()
+                rerouteForModeChange()
+            }
             .setNegativeButton("Cancel", null)
             .show()
     }
@@ -1143,7 +1246,7 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------------------- dialogs --
 
-    private fun showSearch() {
+    private fun showSearch(asWaypoint: Boolean = false) {
         val m = map
         if (m == null) { toast("Map not loaded yet"); return }
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
@@ -1172,13 +1275,20 @@ class MainActivity : Activity() {
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { refresh(s?.toString() ?: "") }
             override fun afterTextChanged(s: Editable?) {}
         })
-        val dlg = AlertDialog.Builder(this).setTitle("Navigate to").setView(box)
+        val dlg = AlertDialog.Builder(this).setTitle(if (asWaypoint) "Add waypoint" else "Navigate to").setView(box)
             .setNegativeButton("Cancel", null).create()
         list.setOnItemClickListener { _, _, pos, _ ->
             val c = shown.getOrNull(pos)
             if (c != null) {
                 dlg.dismiss()
-                computeRoute(c.x, c.z, c.name, announce = true)
+                if (asWaypoint) addWaypoint(c.x, c.z, c.name)
+                else if (hasDest && nav?.active == true) {
+                    AlertDialog.Builder(this).setTitle(c.name)
+                        .setItems(arrayOf("Add as waypoint", "New destination (replace route)")) { _, k ->
+                            if (k == 0) addWaypoint(c.x, c.z, c.name) else computeRoute(c.x, c.z, c.name, announce = true)
+                        }
+                        .setNegativeButton("Cancel", null).show()
+                } else computeRoute(c.x, c.z, c.name, announce = true)
             }
         }
         dlg.show()

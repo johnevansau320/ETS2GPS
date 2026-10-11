@@ -263,13 +263,16 @@ class Navigator(private val map: MapData, private val router: Router) {
         return NavState(toNext, next, following, remaining, remS, offRoute, arrived, speech)
     }
 
+    /** What the route's last point is called in speech: "your destination", or "your waypoint" on a leg that ends at a stop. */
+    var arriveWord = "your destination"
+
     private fun phrase(m: Maneuver, then: Maneuver?, dist: Float, stage: Int): String {
         val base = instruction(m)
         val tail = if (then != null && then.turn != Turn.ARRIVE && then.atM - m.atM < 320f && m.turn != Turn.ARRIVE)
             ", then " + instruction(then) else ""
         return when {
             m.turn == Turn.ARRIVE ->
-                if (stage >= 3) "You have arrived at your destination" else "In ${spokenDistance(dist)}, you will arrive at your destination"
+                if (stage >= 3) "You have arrived at $arriveWord" else "In ${spokenDistance(dist)}, you will arrive at $arriveWord"
             stage >= 3 -> base.replaceFirstChar { it.uppercase() } + tail
             else -> "In ${spokenDistance(dist)}, $base${m.towards?.let { " towards $it" } ?: ""}$tail"
         }
@@ -284,7 +287,7 @@ class Navigator(private val map: MapData, private val router: Router) {
         Turn.TURN_RIGHT -> "turn right"
         Turn.UTURN -> "make a U-turn"
         Turn.ROUNDABOUT -> "at the roundabout, take the ${ordinal(m.exitNo)} exit"
-        Turn.ARRIVE -> "arrive at your destination"
+        Turn.ARRIVE -> "arrive at $arriveWord"
     }
 
     private fun ordinal(n: Int): String = when (n) {

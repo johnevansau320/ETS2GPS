@@ -52,6 +52,7 @@ Pinch / +/- to zoom, double-tap resets zoom.
 
 ## Extras
 
+- **Waypoints**: once a route exists, search a city and choose *Add as waypoint*, long-press the map and choose *Add as waypoint*, or open **Stops** (Search > Stops) to add, remove, reorder or clear them. Waypoints show as numbered blue markers; the app guides you to each in turn ("Waypoint reached") and the distance/ETA cover the whole trip.
 * **POIs** (from the game's own prefab spawn points and map overlays): fuel stations, service centres, rest areas /
   parking, weigh stations, garages, truck dealers. Shown as F / P / S / W badges on the map; the **POI** button lists the
   nearest ones (things behind you rank lower) and routes there, then resumes your original destination on arrival.

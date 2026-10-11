@@ -28,6 +28,7 @@ class MapView(ctx: Context) : View(ctx) {
     var hasFix = false
 
     var routePts = FloatArray(0) // x,z pairs
+    var stops = FloatArray(0) // waypoint positions, x,z pairs (drawn as numbered markers)
     var routeEdgePt = IntArray(0) // point index (pair index) where each route edge starts
     var routeIdx = 0
     var nextManeuver: Maneuver? = null
@@ -295,6 +296,20 @@ class MapView(ctx: Context) : View(ctx) {
             }
         }
 
+        // waypoints
+        for (i in 0 until stops.size / 2) {
+            val wx = stops[i * 2] - cx; val wz = stops[i * 2 + 1] - cz
+            val sx = px + (wx * rx + wz * rz) * s
+            val sy = py - (wx * fx + wz * fz) * s
+            if (sx < -60 || sx > width + 60 || sy < -60 || sy > height + 60) continue
+            val r = 17f * d
+            stopBg.color = Color.rgb(25, 118, 210)
+            canvas.drawCircle(sx, sy, r, stopBg)
+            canvas.drawCircle(sx, sy, r, markerEdge)
+            poiTxt.textSize = r * 1.2f
+            canvas.drawText((i + 1).toString(), sx, sy + r * 0.42f, poiTxt)
+        }
+
         // next maneuver marker on the road
         val nm = nextManeuver
         if (nm != null) {
@@ -329,6 +344,8 @@ class MapView(ctx: Context) : View(ctx) {
         canvas.drawPath(path, truckEdge)
         canvas.restore()
     }
+
+    private val stopBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
     private fun abs2(dx: Float, dz: Float) = dx * dx + dz * dz
 }
