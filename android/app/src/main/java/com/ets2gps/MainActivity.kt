@@ -117,6 +117,7 @@ class MainActivity : Activity() {
     private class Stop(val x: Float, val z: Float, val name: String)
     private val waypoints = ArrayList<Stop>()
     private val resumeStops = ArrayList<Stop>() // waypoints set aside while a POI detour is active
+    private var startLabel = "Start" // where the current plan began (for naming saved trips)
     private var afterM = 0f // distance / time of the legs after the one being driven
     private var afterS = 0f
     private var paceRatio = 1f // actual speed / speed the router assumed, smoothed (~90 s)
@@ -334,6 +335,7 @@ class MainActivity : Activity() {
         menu.addView(View(this), LinearLayout.LayoutParams(dp(88), dp(10)))
         menuButton(button("Search") { showSearch() })
         menuButton(button("Stops") { showStops() })
+        menuButton(button("Trips") { showTrips() })
         modeBtn = button("Heavy") { cycleRouteMode() }
         menuButton(modeBtn)
         updateModeButton()
@@ -641,6 +643,7 @@ class MainActivity : Activity() {
             destIsPoi = isPoi
         }
         destX = x; destZ = z; destName = name; hasDest = true
+        if (!reroute && !isPoi && !keepStops) startLabel = place.removePrefix("Near ").ifEmpty { "Start" }
         syncStops()
         // the leg being driven ends at the next waypoint, or at the destination when none are left
         val leg = waypoints.firstOrNull()
@@ -1165,6 +1168,89 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------------- waypoints --
+
+    // ---------------------------------------------------------------------- saved trips --
+
+    private class SavedTrip(val name: String, val mode: Int, val dest: Stop, val stops: List<Stop>, val lengthM: Float)
+
+    private fun stopJson(s: Stop) = org.json.JSONObject().put("x", s.x.toDouble()).put("z", s.z.toDouble()).put("n", s.name)
+    private fun stopFrom(o: org.json.JSONObject) = Stop(o.getDouble("x").toFloat(), o.getDouble("z").toFloat(), o.optString("n", "Stop"))
+
+    private fun loadTrips(): MutableList<SavedTrip> {
+        val out = ArrayList<SavedTrip>()
+        try {
+            val arr = org.json.JSONArray(prefs.getString("trips", "[]") ?: "[]")
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val st = o.getJSONArray("stops")
+                out.add(SavedTrip(o.getString("name"), o.optInt("mode", 0), stopFrom(o.getJSONObject("dest")),
+                    (0 until st.length()).map { stopFrom(st.getJSONObject(it)) }, o.optDouble("len", 0.0).toFloat()))
+            }
+        } catch (_: Exception) { }
+        return out
+    }
+
+    private fun storeTrips(list: List<SavedTrip>) {
+        val arr = org.json.JSONArray()
+        for (t in list) arr.put(org.json.JSONObject().put("name", t.name).put("mode", t.mode).put("dest", stopJson(t.dest))
+            .put("stops", org.json.JSONArray().also { a -> t.stops.forEach { a.put(stopJson(it)) } }).put("len", t.lengthM.toDouble()))
+        prefs.edit().putString("trips", arr.toString()).apply()
+    }
+
+    /** Saves the planned trip (destination, waypoints and route type) under a name the user can edit. */
+    private fun saveCurrentTrip() {
+        if (!hasDest || nav?.active != true) { toast("Plan a route first, then save it"); return }
+        if (destIsPoi) { toast("Finish the POI detour first, then save the trip"); return }
+        val input = EditText(this).apply { setText("$startLabel \u2192 $destName"); setSingleLine(); selectAll() }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0); addView(input) }
+        AlertDialog.Builder(this).setTitle("Save this trip as").setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val name = input.text.toString().trim().ifEmpty { "$startLabel \u2192 $destName" }
+                val list = loadTrips()
+                list.removeAll { it.name == name } // same name = replace
+                list.add(0, SavedTrip(name, routeMode.ordinal, Stop(destX, destZ, destName), ArrayList(waypoints), routeRemainingM.coerceAtLeast(0f)))
+                storeTrips(list)
+                toast("Trip saved: $name")
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun showTrips() {
+        val list = loadTrips()
+        val b = AlertDialog.Builder(this).setTitle("Saved trips")
+            .setPositiveButton("Save current trip") { _, _ -> saveCurrentTrip() }
+            .setNegativeButton("Close", null)
+        if (list.isEmpty()) {
+            b.setMessage("No saved trips yet. Plan a route (and any waypoints), then tap Save current trip.")
+        } else {
+            val rows = list.map { t ->
+                val km = t.lengthM * distScale / 1000f
+                val mode = RouteMode.values().getOrNull(t.mode)?.label ?: ""
+                "${t.name}\n${if (km >= 1f) String.format(java.util.Locale.US, "%.0f km", km) + " \u00b7 " else ""}" +
+                    "${t.stops.size} waypoint${if (t.stops.size == 1) "" else "s"} \u00b7 $mode"
+            }
+            b.setItems(rows.toTypedArray()) { _, i -> tripOptions(list, i) }
+        }
+        b.show()
+    }
+
+    private fun tripOptions(list: MutableList<SavedTrip>, i: Int) {
+        val t = list.getOrNull(i) ?: return
+        AlertDialog.Builder(this).setTitle(t.name)
+            .setItems(arrayOf("Start this trip from here", "Delete")) { _, k ->
+                if (k == 0) startSavedTrip(t) else { list.removeAt(i); storeTrips(list); toast("Deleted: ${t.name}") }
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun startSavedTrip(t: SavedTrip) {
+        if (map == null) { toast("Map not loaded yet"); return }
+        if (truck?.connected != true) { toast("Start the game first - no truck position yet"); return }
+        if (routing.get()) { toast("Still planning - try again in a moment"); return }
+        RouteMode.values().getOrNull(t.mode)?.let { routeMode = it; updateModeButton() }
+        waypoints.clear(); waypoints.addAll(t.stops); resumeStops.clear()
+        computeRoute(t.dest.x, t.dest.z, t.dest.name, announce = true, keepStops = true)
+    }
 
     private fun syncStops() {
         mapView.stops = FloatArray(waypoints.size * 2) { if (it % 2 == 0) waypoints[it / 2].x else waypoints[it / 2].z }
