@@ -107,4 +107,17 @@ class RouteTest {
         println("BLOCKED-ROAD CHECK: first edge hidden=${m.isHidden(first)} len=${m.eLen[first]}; route ${res.lengthM / 1000} km, hidden edges used=$hiddenEdges (${hiddenM} m)")
         org.junit.Assert.assertTrue("route must not start on the hidden road", !m.isHidden(first))
     }
+
+    @Test
+    fun destinationDoesNotEndOnHiddenRoad() {
+        val path = System.getenv("ETS2_MAP")
+        assumeTrue(path != null && File(path).exists())
+        val m = MapData.load(File(path!!))
+        val r = Router(m)
+        // Balkan Loco, Maribor: the nearest road to the yard is an invisible one the game GPS never ends on
+        val node = r.nearestMainNode(18617.7f, 23030.4f)
+        var visible = false
+        for (i in 0 until r.outCount(node)) if (!m.isHidden(r.outAt(node, i) shr 1)) visible = true
+        org.junit.Assert.assertTrue("destination node must touch a visible road", visible)
+    }
 }

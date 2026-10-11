@@ -252,7 +252,10 @@ class Router(val map: MapData) {
             map.queryEdges(x, z, r) { e ->
                 for (n in intArrayOf(map.eFrom[e], map.eTo[e])) {
                     if (!inMain[n]) continue
-                    val d = hypot(map.nodeX[n] - x, map.nodeZ[n] - z)
+                    // invisible (hidden) and user-avoided roads are bad places to finish: the game's own GPS
+                    // ends on a visible road, so prefer one unless it is much further away
+                    val pen = if (blocked[e]) 600f else if (map.isHidden(e)) 150f else 0f
+                    val d = hypot(map.nodeX[n] - x, map.nodeZ[n] - z) + pen
                     if (d < bestD) { bestD = d; best = n }
                 }
             }
