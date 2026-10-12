@@ -443,7 +443,7 @@ class MainActivity : Activity() {
                     n.distScale = distScale
                     mapView.map = m
                     banner.setMessage(null)
-                    toast("Map loaded: ${m.cities.size} cities, ${m.edgeCount} road segments")
+                    toast("Map loaded: ${m.cities.size} cities, ${m.edgeCount} road segments" + (if (m.laneN.isEmpty()) " - no lane data: update the companion and download the map again" else ", with lane data"))
                 }
             } catch (t: Throwable) {
                 ui.post { banner.setMessage("Could not load map: ${t.message}") }
@@ -563,7 +563,7 @@ class MainActivity : Activity() {
         val totM = st.remainingM + afterM
         val totS = st.remainingS + afterS
         routeRemainingM = totM
-        laneView.setLanes(if (next != null && !laneHidden && st.distToNextM * distScale < 1000f) next.lanes else null)
+        laneView.setLanes(if (next != null && !laneHidden && st.distToNextM * distScale < 2000f) next.lanes else null)
         if (next != null) banner.setManeuver(next, n.shortDistance(st.distToNextM), n.instruction(next).replaceFirstChar { it.uppercase() } + (next.towards?.let { " towards $it" } ?: ""), st.following)
         updatePace(n)
         val realMin = totS / paceRatio / 60f // real-world minutes at your actual pace
