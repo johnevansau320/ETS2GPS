@@ -146,6 +146,17 @@ class RouteTest {
             }
         }
         println("LANES: $withLanes of $turns junction maneuvers have lane data")
+        // lane hints (turns and straight-on junctions): how often is a panel available along the route?
+        run {
+            val ca = m.findCity("paris")!!; val cb = m.findCity("berlin")!!
+            val na = r.nearestMainNode(ca.x, ca.z); val nb = r.nearestMainNode(cb.x, cb.z)
+            val de = r.outAt(na, 0)
+            val res = r.route(de, m.eLen[de shr 1], nb)!!
+            val nav = Navigator(m, r); nav.setRoute(res, m.eLen[de shr 1])
+            var hints = 0; var pos = 0f
+            val st0 = nav.update(m.deX(res.edges[0], 0), m.deZ(res.edges[0], 0), 20f)
+            println("LANES first hint: ${st0.lanes?.size} lanes in ${st0.lanesDistM} m (route ${res.lengthM} m)")
+        }
         org.junit.Assert.assertTrue(withLanes > 0)
     }
 }

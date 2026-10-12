@@ -564,7 +564,7 @@ class MainActivity : Activity() {
         val totM = st.remainingM + afterM
         val totS = st.remainingS + afterS
         routeRemainingM = totM
-        laneView.setLanes(if (next != null && !laneHidden && st.distToNextM * distScale < LANE_SHOW_M) next.lanes else null)
+        if (!laneHidden && st.lanes != null && st.lanesDistM * distScale < LANE_SHOW_M) laneView.setLanes(st.lanes, n.shortDistance(st.lanesDistM)) else laneView.setLanes(null)
         if (next != null) banner.setManeuver(next, n.shortDistance(st.distToNextM), n.instruction(next).replaceFirstChar { it.uppercase() } + (next.towards?.let { " towards $it" } ?: ""), st.following)
         updatePace(n)
         val realMin = totS / paceRatio / 60f // real-world minutes at your actual pace

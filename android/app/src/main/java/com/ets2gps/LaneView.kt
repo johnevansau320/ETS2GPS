@@ -29,7 +29,12 @@ class LaneView(ctx: Context) : View(ctx) {
     private val rect = RectF()
     private var lanes: List<Lane>? = null
 
-    fun setLanes(l: List<Lane>?) {
+    private var caption = ""
+    private val capPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(230, 255, 255, 255); textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+
+    /** [l] = one entry per lane, left to right (null hides the panel); [dist] = distance to the junction for the caption. */
+    fun setLanes(l: List<Lane>?, dist: String = "") {
+        if (dist != caption) { caption = dist; invalidate() }
         if (l === lanes) return
         lanes = l
         visibility = if (l == null) GONE else VISIBLE
@@ -42,16 +47,19 @@ class LaneView(ctx: Context) : View(ctx) {
 
     override fun onMeasure(w: Int, h: Int) {
         val n = lanes?.size ?: 0
-        setMeasuredDimension((n * cell + 2 * pad).toInt(), (92f * d).toInt())
+        val textW = capPaint.apply { textSize = 14f * d }.measureText(caption.ifEmpty { "00.0 km" }) + 2 * pad
+        setMeasuredDimension(maxOf(n * cell + 2 * pad, textW).toInt(), (112f * d).toInt())
     }
 
     override fun onDraw(c: Canvas) {
         val ls = lanes ?: return
         rect.set(0f, 0f, width.toFloat(), height.toFloat())
         c.drawRoundRect(rect, 14f * d, 14f * d, bg)
+        if (caption.isNotEmpty()) c.drawText(caption, width / 2f, height - 9f * d, capPaint.apply { textSize = 14f * d })
+        val x0 = (width - ls.size * cell) / 2f
         for ((i, lane) in ls.withIndex()) {
-            val cx = pad + cell * (i + 0.5f)
-            if (i > 0) c.drawLine(pad + cell * i, 10f * d, pad + cell * i, height - 10f * d, divider)
+            val cx = x0 + cell * (i + 0.5f)
+            if (i > 0) c.drawLine(x0 + cell * i, 10f * d, x0 + cell * i, height - 30f * d, divider)
             if (lane.altDeg != null) arrow(c, cx, lane.altDeg, Color.argb(95, 255, 255, 255), false)
             if (lane.angleDeg.isNaN()) continue
             if (lane.preferred) arrow(c, cx, lane.angleDeg, Color.rgb(60, 235, 130), true)
@@ -62,13 +70,13 @@ class LaneView(ctx: Context) : View(ctx) {
     /** Arrow rising from the bottom of the lane cell: a stem, then a bend of [deg] (+ = right) ending in a head. */
     private fun arrow(c: Canvas, cx: Float, deg: Float, color: Int, bright: Boolean) {
         val w = 7f * d
-        val bottom = height - 12f * d
+        val bottom = height - 34f * d
         val top = 14f * d
         val a = deg.coerceIn(-100f, 100f)
         val th = Math.toRadians(a.toDouble())
         val dx = sin(th).toFloat(); val dy = -cos(th).toFloat()
         val straight = Math.abs(a) < 12f
-        val bendY = if (straight) top + 8f * d else height * 0.52f
+        val bendY = if (straight) top + 8f * d else (top + bottom) / 2f
         val len = if (straight) 0f else 24f * d
         val ex = cx + dx * len; val ey = bendY + dy * len
         path.reset()

@@ -11,6 +11,9 @@ enum class Turn { KEEP_LEFT, KEEP_RIGHT, BEAR_LEFT, BEAR_RIGHT, TURN_LEFT, TURN_
 /** One lane of the approach to a junction: the direction it takes (deg, + = right; NaN = unknown), whether the route uses it, and an optional second direction. */
 class Lane(val angleDeg: Float, val preferred: Boolean, val altDeg: Float?)
 
+/** Lane guidance at a junction along the route, [atM] metres from the start of the route. */
+class LaneHint(val atM: Float, val lanes: List<Lane>)
+
 class Maneuver(
     val turn: Turn,
     val atM: Float, // distance along the route (from the start of its first edge)
@@ -31,6 +34,8 @@ class NavState(
     val offRoute: Boolean,
     val arrived: Boolean,
     val speech: String?,
+    val lanes: List<Lane>? = null, // lane guidance for the next junction that has lane data (not only turns)
+    val lanesDistM: Float = 0f,
 )
 
 /**
@@ -45,6 +50,7 @@ class Navigator(private val map: MapData, private val router: Router) {
     private var secs = FloatArray(0) // cumulative seconds at the start of each route edge
     var maneuvers: List<Maneuver> = emptyList()
         private set
+    private var laneHints: List<LaneHint> = emptyList()
     private var stage = IntArray(0)
     private var idx = 0
     private var progress = 0f
@@ -65,7 +71,7 @@ class Navigator(private val map: MapData, private val router: Router) {
     val routeLengthM get() = if (cum.isNotEmpty()) cum[cum.size - 1] else 0f
 
     fun clear() {
-        route = IntArray(0); cum = FloatArray(0); maneuvers = emptyList(); stage = IntArray(0)
+        route = IntArray(0); cum = FloatArray(0); maneuvers = emptyList(); laneHints = emptyList(); stage = IntArray(0)
         idx = 0; progress = 0f; offCount = 0; started = false
     }
 
@@ -114,6 +120,7 @@ class Navigator(private val map: MapData, private val router: Router) {
 
     private fun buildManeuvers(): List<Maneuver> {
         val out = ArrayList<Maneuver>()
+        val hints = ArrayList<LaneHint>()
         val n = route.size
         for (k in 1 until n - 1) {
             val de = route[k]
@@ -143,6 +150,7 @@ class Navigator(private val map: MapData, private val router: Router) {
             val a = abs(angle)
             val right = angle > 0
             val before = out.size
+            val laneList = lanesFor(alts, de)
             when {
                 a < 22f -> if (straightest.first != de) {
                     out.add(Maneuver(if (right) Turn.KEEP_RIGHT else Turn.KEEP_LEFT, cum[k], 0, angle, x, z))
@@ -151,11 +159,14 @@ class Navigator(private val map: MapData, private val router: Router) {
                 a < 135f -> out.add(Maneuver(if (right) Turn.TURN_RIGHT else Turn.TURN_LEFT, cum[k], 0, angle, x, z))
                 else -> out.add(Maneuver(Turn.UTURN, cum[k], 0, angle, x, z))
             }
-            if (out.size > before) out[out.size - 1].lanes = lanesFor(alts, de)
+            if (out.size > before) out[out.size - 1].lanes = laneList
+            // also hint junctions where the route just carries straight on but some lanes would leave it
+            if (laneList != null && (out.size > before || laneList.any { !it.preferred })) hints.add(LaneHint(cum[k], laneList))
         }
         val last = route[n - 1]
         val m = map.deCount(last)
         out.add(Maneuver(Turn.ARRIVE, cum[n], 0, 0f, map.deX(last, m - 1), map.deZ(last, m - 1)))
+        laneHints = hints
         return out
     }
 
@@ -284,7 +295,8 @@ class Navigator(private val map: MapData, private val router: Router) {
                 speech = phrase(next, following, toNext, want)
             }
         }
-        return NavState(toNext, next, following, remaining, remS, offRoute, arrived, speech)
+        val hint = laneHints.firstOrNull { it.atM > progress - 12f }
+        return NavState(toNext, next, following, remaining, remS, offRoute, arrived, speech, hint?.lanes, if (hint != null) max(0f, hint.atM - progress) else 0f)
     }
 
     /** What the route's last point is called in speech: "your destination", or "your waypoint" on a leg that ends at a stop. */
