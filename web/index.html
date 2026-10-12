@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ETS2 GPS">
+<meta name="theme-color" content="#10151c">
+<title>ETS2 GPS</title>
+<style>
+:root { --bg:#10151c; --panel:rgba(14,18,24,.88); --btn:#1e2836; --btn2:#2a3648; --green:#125c3a; --accent:#1976d2; --txt:#fff; --dim:#aab3c0; }
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font-family:-apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden; overscroll-behavior:none; -webkit-user-select:none; user-select:none; }
+#map { position:absolute; inset:0; width:100%; height:100%; touch-action:none; display:block; }
+.abs { position:absolute; }
+#banner { left:8px; right:8px; top:max(6px, env(safe-area-inset-top)); height:96px; background:rgba(18,92,58,.94); border-radius:14px; display:flex; align-items:center; padding:0 12px; gap:12px; overflow:hidden; }
+#bGlyph { width:76px; height:76px; flex:none; }
+#bMain { flex:none; min-width:150px; }
+#bDist { font-size:34px; font-weight:700; line-height:1.05; }
+#bWhat { font-size:17px; opacity:.92; max-width:34vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#bJob { flex:1; text-align:right; min-width:0; }
+#bJob1 { font-size:15px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#bJob2 { font-size:14px; opacity:.92; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:3px; }
+#bJob2.late { color:#ffa096; }
+#bThen { width:60px; height:60px; flex:none; background:rgba(0,0,0,.42); border-radius:10px; position:relative; display:none; }
+#bThen span { position:absolute; top:-1px; left:0; right:0; text-align:center; font-size:10px; opacity:.8; }
+#bMsg { font-size:17px; }
+#lanes { left:50%; transform:translateX(-50%); top:calc(max(6px, env(safe-area-inset-top)) + 100px); display:none; }
+#menu { z-index:5; left:10px; top:calc(max(6px, env(safe-area-inset-top)) + 106px); bottom:84px; display:flex; flex-direction:column; justify-content:center; gap:6px; overflow-y:auto; scrollbar-width:none; padding-bottom:2px; }
+#menu::-webkit-scrollbar { display:none; }
+.btn { width:88px; height:46px; flex:none; background:var(--btn); color:#fff; border:0; border-radius:4px; font-size:15px; font-family:inherit; }
+.btn:active { background:var(--btn2); }
+.btn.blue { background:var(--accent); }
+#zoom { right:24px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; gap:8px; }
+.zbtn { width:52px; height:52px; background:var(--btn); color:#fff; border:0; border-radius:4px; font-size:26px; font-family:inherit; }
+#compass { right:0; width:100px; height:100px; }
+#alt { width:auto; min-width:90px; height:100px; background:rgba(14,18,24,.75); border-radius:10px; font-size:28px; font-weight:700; display:flex; align-items:center; justify-content:center; text-align:center; padding:0 10px; line-height:1.2; text-shadow:0 0 4px #000; white-space:pre; }
+#recentre { right:24px; bottom:96px; width:150px; height:52px; background:rgb(30,120,70); color:#fff; border:0; border-radius:4px; font-size:18px; display:none; }
+#status { right:12px; top:calc(max(6px, env(safe-area-inset-top)) + 106px); font-size:13px; color:rgba(255,200,120,.9); text-shadow:0 0 4px #000; text-align:right; max-width:50vw; }
+#bottom { left:0; right:0; bottom:0; background:rgba(14,18,24,.9); display:flex; align-items:center; padding:8px 12px calc(8px + env(safe-area-inset-bottom)); gap:12px; min-height:76px; }
+#speedBox { width:78px; text-align:center; flex:none; }
+#speed { font-size:34px; font-weight:700; line-height:1; }
+#speedUnit { font-size:11px; color:var(--dim); }
+#limit { width:46px; height:46px; background:#fff; color:#000; font-weight:700; font-size:18px; display:flex; align-items:center; justify-content:center; flex:none; visibility:hidden; }
+#info { flex:1; font-size:15px; white-space:pre-line; line-height:1.3; }
+#trip { inset:0; background:var(--bg); display:none; overflow:auto; padding:calc(10px + env(safe-area-inset-top)) 12px 12px 112px; }
+#trip h2 { margin:4px 0 8px; font-size:20px; }
+.tbar { height:10px; background:#243040; border-radius:5px; overflow:hidden; margin:6px 0 4px; }
+.tbar > div { height:100%; background:#5abeff; }
+.cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px,1fr)); gap:10px; }
+.card { background:#18212d; border-radius:10px; padding:10px 12px; }
+.card h3 { margin:0 0 6px; font-size:13px; letter-spacing:.06em; color:#9fb0c6; }
+.row { display:flex; justify-content:space-between; gap:10px; padding:2px 0; font-size:15px; }
+.row b { font-weight:600; text-align:right; }
+.big { font-size:34px; font-weight:700; }
+#modalBg { inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; z-index:20; }
+#modal { background:#1c2431; border-radius:14px; width:min(560px,92vw); max-height:86vh; display:flex; flex-direction:column; box-shadow:0 8px 40px #000; }
+#modal h2 { margin:0; padding:16px 18px 6px; font-size:20px; }
+#modal .body { padding:6px 18px; overflow:auto; flex:1; font-size:15px; line-height:1.4; }
+#modal .list > div { padding:12px 6px; border-bottom:1px solid rgba(255,255,255,.1); white-space:pre-line; }
+#modal .list > div:active { background:#2a3648; }
+#modal input[type=text], #modal input[type=number] { -webkit-user-select:text; user-select:text; width:100%; padding:10px; font-size:17px; border-radius:6px; border:1px solid #445; background:#10151c; color:#fff; margin:6px 0; }
+#modal label { display:block; padding:6px 0; }
+#modal .acts { display:flex; gap:8px; justify-content:flex-end; padding:10px 14px 14px; flex-wrap:wrap; }
+#modal .acts button, #modal .inline { background:#2a3648; color:#fff; border:0; border-radius:6px; padding:10px 16px; font-size:16px; font-family:inherit; }
+#modal .acts button.primary { background:var(--accent); }
+#toast { left:50%; transform:translateX(-50%); bottom:96px; background:rgba(0,0,0,.82); padding:10px 16px; border-radius:20px; font-size:15px; display:none; z-index:30; max-width:80vw; text-align:center; }
+@media (max-width: 800px) { #bWhat { max-width:30vw; } #bJob { display:none; } }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+
+<div id="banner" class="abs">
+  <canvas id="bGlyph"></canvas>
+  <div id="bMain"><div id="bDist"></div><div id="bWhat"></div></div>
+  <div id="bMsg" style="display:none"></div>
+  <div id="bJob"><div id="bJob1"></div><div id="bJob2"></div></div>
+  <div id="bThen"><span>then</span><canvas id="bThenGlyph" width="60" height="60" style="width:60px;height:60px"></canvas></div>
+</div>
+
+<canvas id="lanes" class="abs"></canvas>
+
+<div id="menu" class="abs">
+  <button class="btn blue" id="btnTrip">Trip</button>
+  <div style="height:6px;flex:none"></div>
+  <button class="btn" id="btnSearch">Search</button>
+  <button class="btn" id="btnStops">Stops</button>
+  <button class="btn" id="btnTrips">Trips</button>
+  <button class="btn" id="btnMode">Heavy</button>
+  <button class="btn" id="btnVoice">Voice on</button>
+  <button class="btn" id="btnPoi">POI</button>
+  <button class="btn" id="btnJob">Job</button>
+  <button class="btn" id="btnStop">Stop</button>
+  <button class="btn" id="btnSettings">⚙</button>
+</div>
+
+<div id="zoom" class="abs"><button class="zbtn" id="zIn">+</button><button class="zbtn" id="zOut">−</button></div>
+<canvas id="compass" class="abs"></canvas>
+<div id="alt" class="abs">-- m</div>
+<button id="recentre" class="abs">◎  Recentre</button>
+<div id="status" class="abs"></div>
+
+<div id="bottom" class="abs">
+  <div id="speedBox"><div id="speed">0</div><div id="speedUnit">km/h</div></div>
+  <div id="limit">--</div>
+  <div id="info">No route</div>
+</div>
+
+<div id="trip" class="abs"></div>
+<div id="modalBg" class="abs"><div id="modal"></div></div>
+<div id="toast" class="abs"></div>
+
+<script src="mapdata.js"></script>
+<script src="router.js"></script>
+<script src="navigator.js"></script>
+<script src="telemetry.js"></script>
+<script src="gfx.js"></script>
+<script src="mapview.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

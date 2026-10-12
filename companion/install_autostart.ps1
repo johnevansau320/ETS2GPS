@@ -14,6 +14,8 @@ if (Test-Path $cand) { $py = $cand } else { throw "pythonw.exe not found next to
 $dir = Join-Path $env:LOCALAPPDATA "ETS2-GPS-companion"
 New-Item -ItemType Directory -Force $dir | Out-Null
 Get-ChildItem $src -Exclude "__pycache__","rb_debug.json","companion.log" | Copy-Item -Destination $dir -Recurse -Force
+$webSrc = Join-Path (Split-Path -Parent $src) "web"
+if (Test-Path $webSrc) { Copy-Item $webSrc -Destination $dir -Recurse -Force }   # the web app (iPad / browser)
 $script = Join-Path $dir "companion.py"
 
 $action   = New-ScheduledTaskAction -Execute $py -Argument "`"$script`"" -WorkingDirectory $dir

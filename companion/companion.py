@@ -8,6 +8,9 @@ The phone app talks to two things on this PC:
   * (optional) it can speak the phone's voice prompts on this PC, e.g. in your headset: POST /say
   * the TruckSim GPS Telemetry Server (port 31377) for live truck position
   * this companion (port 31378) once, to download the map file
+
+It also serves the web app (open http://<pc-ip>:31378/ in Safari / Chrome, e.g. on an iPad) and proxies the
+telemetry server for it at /api/telemetry, so the browser only ever talks to this one address.
 """
 import argparse
 import base64
@@ -22,6 +25,7 @@ import socketserver
 import sys
 import threading
 import time
+import urllib.request
 
 import build_map
 from gamefiles import active_mod_packages, find_game_dir, mount_everything
@@ -30,6 +34,18 @@ PORT = 31378
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAP_FILE = os.path.join(HERE, "etsmap.bin")
 META_FILE = os.path.join(HERE, "etsmap.meta.json")
+TELEMETRY_URL = "http://127.0.0.1:31377/api/ets2/telemetry"
+MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css",
+        ".json": "application/json", ".png": "image/png", ".ico": "image/x-icon", ".svg": "image/svg+xml",
+        ".webmanifest": "application/manifest+json"}
+
+
+def web_dir():
+    """The web app folder: next to this script (installed copy) or one level up (source checkout)."""
+    for d in (os.path.join(HERE, "web"), os.path.join(os.path.dirname(HERE), "web")):
+        if os.path.isfile(os.path.join(d, "index.html")):
+            return d
+    return None
 
 
 # Run without a console (pythonw / scheduled task): send all output to companion.log instead of failing.
@@ -175,9 +191,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self._reply(404, b"not found")
 
+    def _web_file(self, path):
+        """Serve a file of the web app (no sub-folders, so no path traversal)."""
+        d = web_dir()
+        name = "index.html" if path in ("/", "") else path.lstrip("/")
+        if d is None or "/" in name or "\\" in name or name.startswith("."):
+            return False
+        fp = os.path.join(d, name)
+        if not os.path.isfile(fp):
+            return False
+        with open(fp, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", MIME.get(os.path.splitext(name)[1].lower(), "application/octet-stream"))
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
+    def _telemetry(self):
+        try:
+            with urllib.request.urlopen(TELEMETRY_URL, timeout=1.5) as r:
+                body = r.read()
+            self.send_response(200)
+        except Exception as e:  # server not running / game not started
+            body = json.dumps({"error": str(e)}).encode()
+            self.send_response(502)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = self.path.split("?")[0]
-        if path == "/say":
+        if path == "/api/telemetry":
+            self._telemetry()
+        elif path == "/say":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             self._reply(200 if SPEAKER.say((q.get("text") or [""])[0]) else 500)
         elif path == "/info":
@@ -200,8 +251,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+        elif self._web_file(path):
+            pass
         else:
-            body = b"ETS2 GPS companion. Endpoints: /info, /map.bin\n"
+            body = b"ETS2 GPS companion. Endpoints: /info, /map.bin, /api/telemetry, / (web app)\n"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(body)))
@@ -220,9 +273,12 @@ def main():
     ap.add_argument("--no-mods", action="store_true")
     ap.add_argument("--rebuild", action="store_true")
     ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--telemetry", default="127.0.0.1:31377", help="host:port of the TruckSim GPS telemetry server")
     ap.add_argument("--voice-rate", type=int, default=0, help="PC voice speed, -10 (slow) .. 10 (fast)")
     ap.add_argument("--voice", default="", help="PC voice name, e.g. \"Microsoft Zira Desktop\"")
     args = ap.parse_args()
+    global TELEMETRY_URL
+    TELEMETRY_URL = "http://%s/api/ets2/telemetry" % args.telemetry
     Handler.meta = ensure_map(args)
     SPEAKER.rate, SPEAKER.voice = args.voice_rate, args.voice
     srv = Server(("0.0.0.0", args.port), Handler)
@@ -230,6 +286,7 @@ def main():
     log("serving the map on port %d" % args.port)
     for ip in ips:
         log("  phone app map URL:  http://%s:%d/map.bin   (telemetry server: %s:31377)" % (ip, args.port, ip))
+        log("  web app (iPad / any browser):  http://%s:%d/" % (ip, args.port))
     log("If the phone cannot connect, allow inbound TCP %d in Windows Firewall:" % args.port)
     log('  netsh advfirewall firewall add rule name="ETS2 GPS companion" dir=in action=allow protocol=TCP localport=%d'
         % args.port)

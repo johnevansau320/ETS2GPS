@@ -84,6 +84,17 @@ Pinch / +/- to zoom, double-tap resets zoom.
 * **Road names**: ETS2's map files do not store road names or numbers (only sparse text on sign boards), so the app
   names the next town instead.
 
+## Web version (iPad, iPhone or any browser)
+
+The same GPS also runs as a web app, served by the companion, so an iPad needs no App Store app and no Mac:
+
+1. Update and restart the companion (re-run `install_autostart.ps1` if you use autostart). The console prints `web app: http://<pc-ip>:31378/`.
+2. On the iPad (same Wi-Fi) open that address in Safari. First load downloads and unpacks the map (about 15 MB, a few seconds).
+3. Share > **Add to Home Screen** for a full-screen app. Set Settings > Display > Auto-Lock to **Never** while driving.
+4. Tap **Voice** once so the browser allows speech. In Settings you can speak on the iPad, on the PC headset (via the companion) or both.
+
+It has the same routing, guidance, lane panel, waypoints, saved trips (stored in the browser), POI search, alerts and Trip screen as the Android app. Differences: the Trip screen is a card grid, and routing runs in the browser (a very long route can pause the map for a moment). It needs iPadOS / Safari 16.4 or newer (or a current Chrome, Edge or Firefox). The browser talks only to the companion, which forwards telemetry from the TruckSim GPS server on the PC.
+
 ## Notes and limits
 
 * ETS2's map is 1:19. The game's own GPS shows distances as map metres x 19, so the app does too by default
