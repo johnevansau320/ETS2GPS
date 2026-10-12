@@ -8,6 +8,9 @@ import kotlin.math.roundToInt
 
 enum class Turn { KEEP_LEFT, KEEP_RIGHT, BEAR_LEFT, BEAR_RIGHT, TURN_LEFT, TURN_RIGHT, UTURN, ROUNDABOUT, ARRIVE }
 
+/** One lane of the approach to a junction: the direction it takes (deg, + = right; NaN = unknown), whether the route uses it, and an optional second direction. */
+class Lane(val angleDeg: Float, val preferred: Boolean, val altDeg: Float?)
+
 class Maneuver(
     val turn: Turn,
     val atM: Float, // distance along the route (from the start of its first edge)
@@ -16,6 +19,7 @@ class Maneuver(
     val x: Float, val z: Float, // position of the junction entry
 ) {
     var towards: String? = null // next town the route heads for after this maneuver
+    var lanes: List<Lane>? = null // lane guidance for the approach, when the map has lane data
 }
 
 class NavState(
@@ -138,6 +142,7 @@ class Navigator(private val map: MapData, private val router: Router) {
             }
             val a = abs(angle)
             val right = angle > 0
+            val before = out.size
             when {
                 a < 22f -> if (straightest.first != de) {
                     out.add(Maneuver(if (right) Turn.KEEP_RIGHT else Turn.KEEP_LEFT, cum[k], 0, angle, x, z))
@@ -146,10 +151,29 @@ class Navigator(private val map: MapData, private val router: Router) {
                 a < 135f -> out.add(Maneuver(if (right) Turn.TURN_RIGHT else Turn.TURN_LEFT, cum[k], 0, angle, x, z))
                 else -> out.add(Maneuver(Turn.UTURN, cum[k], 0, angle, x, z))
             }
+            if (out.size > before) out[out.size - 1].lanes = lanesFor(alts, de)
         }
         val last = route[n - 1]
         val m = map.deCount(last)
         out.add(Maneuver(Turn.ARRIVE, cum[n], 0, 0f, map.deX(last, m - 1), map.deZ(last, m - 1)))
+        return out
+    }
+
+    /** Lane arrows for the approach to the junction path [de], from the lane table of the map (null when unknown). */
+    private fun lanesFor(alts: List<Pair<Int, Float>>, de: Int): List<Lane>? {
+        val n = map.lanesAtEntry(de shr 1)
+        val chosen = map.laneMaskOf(de shr 1)
+        if (n < 2 || chosen == 0) return null
+        val mine = alts.first { it.first == de }.second
+        val out = ArrayList<Lane>()
+        for (i in 0 until n) {
+            val dirs = alts.filter { (map.laneMaskOf(it.first shr 1) shr i) and 1 != 0 }
+            if (dirs.isEmpty()) { out.add(Lane(Float.NaN, false, null)); continue }
+            val pref = (chosen shr i) and 1 != 0
+            val main = if (pref) mine else dirs.minByOrNull { abs(it.second) }!!.second
+            val other = dirs.map { it.second }.filter { abs(it - main) > 20f }.minByOrNull { abs(it) }
+            out.add(Lane(main, pref, other))
+        }
         return out
     }
 

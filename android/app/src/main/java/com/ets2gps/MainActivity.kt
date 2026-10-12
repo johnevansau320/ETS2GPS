@@ -50,6 +50,7 @@ class MainActivity : Activity() {
     private lateinit var mapView: MapView
     private lateinit var banner: TurnBanner
     private lateinit var compass: CompassView
+    private lateinit var laneView: LaneView
     private lateinit var recentreBtn: Button
     private lateinit var tripScreen: TripScreen
     private lateinit var tripBtn: Button
@@ -118,6 +119,7 @@ class MainActivity : Activity() {
     private val waypoints = ArrayList<Stop>()
     private val resumeStops = ArrayList<Stop>() // waypoints set aside while a POI detour is active
     private var startLabel = "Start" // where the current plan began (for naming saved trips)
+    private var laneHidden = false // the Trip screen is open
     private var afterM = 0f // distance / time of the legs after the one being driven
     private var afterS = 0f
     private var paceRatio = 1f // actual speed / speed the router assumed, smoothed (~90 s)
@@ -255,6 +257,13 @@ class MainActivity : Activity() {
             rightMargin = dp(24); bottomMargin = dp(96)
         })
         mapView.onFreeChanged = { free -> recentreBtn.visibility = if (free) View.VISIBLE else View.GONE }
+
+        // lane guidance: centred under the green bar, shown when the next junction has lane data
+        laneView = LaneView(this)
+        laneView.visibility = View.GONE
+        root.addView(laneView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = dp(106)
+        })
 
         // compass: right edge, halfway between the bottom of the green bar and the top of the zoom buttons
         compass = CompassView(this)
@@ -545,7 +554,7 @@ class MainActivity : Activity() {
             infoText.text = "Arrived at $destName"
             banner.setMessage("You have arrived")
             n.clear()
-            mapView.routePts = FloatArray(0); mapView.routeEdgePt = IntArray(0); mapView.nextManeuver = null
+            mapView.routePts = FloatArray(0); mapView.routeEdgePt = IntArray(0); mapView.nextManeuver = null; laneView.setLanes(null)
             hasDest = false
             return
         }
@@ -554,6 +563,7 @@ class MainActivity : Activity() {
         val totM = st.remainingM + afterM
         val totS = st.remainingS + afterS
         routeRemainingM = totM
+        laneView.setLanes(if (next != null && !laneHidden && st.distToNextM * distScale < 1000f) next.lanes else null)
         if (next != null) banner.setManeuver(next, n.shortDistance(st.distToNextM), n.instruction(next).replaceFirstChar { it.uppercase() } + (next.towards?.let { " towards $it" } ?: ""), st.following)
         updatePace(n)
         val realMin = totS / paceRatio / 60f // real-world minutes at your actual pace
@@ -619,7 +629,7 @@ class MainActivity : Activity() {
         lastNextText = ""
         paceRatio = 1f
         hasDest = false
-        mapView.routePts = FloatArray(0); mapView.routeEdgePt = IntArray(0); mapView.nextManeuver = null
+        mapView.routePts = FloatArray(0); mapView.routeEdgePt = IntArray(0); mapView.nextManeuver = null; laneView.setLanes(null)
         banner.setMessage(null)
         infoText.text = "No route"
     }
@@ -813,6 +823,8 @@ class MainActivity : Activity() {
         tripScreen.visibility = if (show) View.VISIBLE else View.GONE
         zoomBox.visibility = if (show) View.GONE else View.VISIBLE
         compass.visibility = if (show) View.GONE else View.VISIBLE
+        laneHidden = show
+        if (show) laneView.setLanes(null)
         altText.visibility = if (show) View.GONE else View.VISIBLE
         recentreBtn.visibility = if (show || !mapView.free) View.GONE else View.VISIBLE
         tripBtn.text = if (show) "Map" else "Trip"

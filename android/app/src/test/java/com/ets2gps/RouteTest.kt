@@ -120,4 +120,32 @@ class RouteTest {
         for (i in 0 until r.outCount(node)) if (!m.isHidden(r.outAt(node, i) shr 1)) visible = true
         org.junit.Assert.assertTrue("destination node must touch a visible road", visible)
     }
+
+    @Test
+    fun lanesAppearOnRealRoute() {
+        val path = System.getenv("ETS2_MAP")
+        assumeTrue(path != null && File(path).exists())
+        val m = MapData.load(File(path!!))
+        assumeTrue(m.laneN.isNotEmpty())
+        val r = Router(m)
+        var withLanes = 0; var turns = 0; var shown = 0
+        for ((a, b) in listOf("paris" to "berlin", "calais" to "madrid", "london" to "edinburgh", "maribor" to "graz")) {
+            val ca = m.findCity(a) ?: continue; val cb = m.findCity(b) ?: continue
+            val na = r.nearestMainNode(ca.x, ca.z); val nb = r.nearestMainNode(cb.x, cb.z)
+            val de = r.outAt(na, 0)
+            val res = r.route(de, m.eLen[de shr 1], nb) ?: continue
+            val nav = Navigator(m, r)
+            nav.setRoute(res, m.eLen[de shr 1])
+            for (mv in nav.maneuvers) {
+                if (mv.turn == Turn.ARRIVE || mv.turn == Turn.ROUNDABOUT) continue
+                turns++
+                val l = mv.lanes ?: continue
+                withLanes++
+                if (shown++ < 12) println("LANES $a->$b ${mv.turn} angle=${mv.angleDeg.toInt()}: " +
+                    l.joinToString(" ") { (if (it.preferred) "[" else "") + (if (it.angleDeg.isNaN()) "?" else it.angleDeg.toInt().toString()) + (it.altDeg?.let { a -> "/" + a.toInt() } ?: "") + (if (it.preferred) "]" else "") })
+            }
+        }
+        println("LANES: $withLanes of $turns junction maneuvers have lane data")
+        org.junit.Assert.assertTrue(withLanes > 0)
+    }
 }

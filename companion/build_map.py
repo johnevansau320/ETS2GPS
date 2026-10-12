@@ -22,8 +22,8 @@ POI_NAMES = {1: 'fuel', 2: 'service', 3: 'parking', 4: 'weigh', 5: 'dealer', 6: 
 HUD_PARKING = str_to_token("hud_parking")
 # FORMAT_VERSION changes whenever the builder's output could change (it triggers an automatic rebuild);
 # FILE_VERSION is the binary layout the phone app must understand and only changes with the layout.
-FORMAT_VERSION = 14
-FILE_VERSION = 7
+FORMAT_VERSION = 15
+FILE_VERSION = 8
 
 
 def f32(v):
@@ -266,6 +266,55 @@ def prefab_paths(pf, curves):
     return out
 
 
+def prefab_lanes(pf, curves):
+    """Lane connections of a prefab: {(entry node, exit node): (lanes at the entry, bitmask of lanes that reach the exit)}.
+
+    Every start curve (no predecessor) is one lane entering the junction; lanes are numbered from the left of
+    the direction of travel. Which lanes can reach which exit is read from the chains of next-curves."""
+    starts = [i for i, c in enumerate(curves) if c["pc"] == 0]
+    by_node = {}
+    for i in starts:
+        a = nearest_node(pf, curves[i]["s"])
+        if a >= 0:
+            by_node.setdefault(a, []).append(i)
+    lane_of = {}
+    count = {}
+    for a, idxs in by_node.items():
+        dx, dz = curves[idxs[0]]["sdir"]
+        rx, rz = -dz, dx  # right-hand side of the travel direction
+        lat = sorted({round((curves[i]["s"][0] * rx + curves[i]["s"][1] * rz) * 2) / 2 for i in idxs})
+        count[a] = min(len(lat), 15)
+        for i in idxs:
+            v = round((curves[i]["s"][0] * rx + curves[i]["s"][1] * rz) * 2) / 2
+            lane_of[i] = min(lat.index(v), 14)
+    out = {}
+    for i in starts:
+        if i not in lane_of:
+            continue
+        a = nearest_node(pf, curves[i]["s"])
+        budget = [300]
+        seen = set()
+        stack = [i]
+        ends = set()
+        while stack and budget[0] > 0:
+            budget[0] -= 1
+            u = stack.pop()
+            if u in seen:
+                continue
+            seen.add(u)
+            c = curves[u]
+            if not c["next"]:
+                b = nearest_node(pf, c["e"])
+                if b >= 0 and b != a:
+                    ends.add(b)
+            else:
+                stack.extend(c["next"])
+        for b in ends:
+            n, m = out.get((a, b), (count[a], 0))
+            out[(a, b)] = (n, m | (1 << lane_of[i]))
+    return out
+
+
 # ---------------------------------------------------------------------- main --
 
 def collect_sectors(fs, defs):
@@ -339,6 +388,7 @@ def build(fs, out_path):
     ring_cache = {}
     jct_cands = []  # placed junctions whose roundabout status is decided once the graph is complete
     rb_debug = []
+    lanes_of = {}   # (uid_a, uid_b, jid) -> (lanes at the entry, mask of lanes reaching the exit)
 
     for uid, su, eu, look, secret, _dlc, hid in roads:
         if hid and os.environ.get("ETS2_NO_HIDDEN"):
@@ -403,6 +453,7 @@ def build(fs, out_path):
             curves = parse_curves(pf)
             if curves:
                 paths = prefab_paths(pf, curves)
+                plane = prefab_lanes(pf, curves)
                 name = ""
                 path = defs.prefab_paths.get(ptok, "").lower()
                 rb = False
@@ -422,6 +473,8 @@ def build(fs, out_path):
                     ua, ub = unodes[(a - origin) % nn], unodes[(b - origin) % nn]
                     pts = [tf(p) for p in lpts]
                     graph.append((ua, ub, 16 if hid else 0, 3, 40, pts, jid_, 30))  # flag bit 4 = hidden item
+                    if (a, b) in plane:
+                        lanes_of[(ua, ub, jid_)] = plane[(a, b)]
             else:
                 nonav += 1
     log("prefabs used: %d (%d with unreadable nav data); %d graph edges" % (npref, nonav, len(graph)))
@@ -585,6 +638,16 @@ def build(fs, out_path):
     buf += struct.pack("<I", len(uniq))
     for t, x, z in uniq:
         buf += struct.pack("<Bff", t, x, z)
+    # lane table (file version 8): junction edge index, lanes at the entry, mask of lanes that take this path
+    lane_rows = []
+    for gi, e in enumerate(graph):
+        li = lanes_of.get((e[0], e[1], e[6])) if e[6] else None
+        if li and li[0] >= 2:
+            lane_rows.append((gi, li[0], li[1]))
+    buf += struct.pack("<I", len(lane_rows))
+    for gi, n_, m_ in lane_rows:
+        buf += struct.pack("<IBH", gi, n_, m_)
+    log("lane data for %d junction paths" % len(lane_rows))
     counts = {}
     for t, _, _ in uniq:
         counts[t] = counts.get(t, 0) + 1

@@ -61,6 +61,9 @@ class MapData(
     val cities: List<City>,
     val companies: List<Company>,
     val pois: List<Poi>,
+    /** Per junction edge: lanes at the entry (0 = unknown) and the bitmask of lanes (from the left) that take this path. */
+    val laneN: ByteArray = ByteArray(0),
+    val laneMask: ShortArray = ShortArray(0),
 ) {
     val nodeCount get() = nodeX.size
     val edgeCount get() = eFrom.size
@@ -131,6 +134,9 @@ class MapData(
         stamp[e] = gen
         return false
     }
+
+    fun lanesAtEntry(e: Int): Int = if (e < laneN.size) laneN[e].toInt() else 0
+    fun laneMaskOf(e: Int): Int = if (e < laneMask.size) laneMask[e].toInt() and 0xFFFF else 0
 
     fun isTwoWay(e: Int) = (eFlags[e].toInt() and 1) != 0
     fun isFerry(e: Int) = (eFlags[e].toInt() and 8) != 0
@@ -252,9 +258,18 @@ class MapData(
                     pois.add(Poi(t, b.float, b.float))
                 }
             }
+            var laneN = ByteArray(0); var laneMask = ShortArray(0)
+            if (ver >= 8 && b.remaining() >= 4) {
+                laneN = ByteArray(en); laneMask = ShortArray(en)
+                val ln = b.int
+                for (i in 0 until ln) {
+                    val e = b.int; val n = b.get(); val m = b.short
+                    if (e in 0 until en) { laneN[e] = n; laneMask[e] = m }
+                }
+            }
             return MapData(
                 minX, minZ, maxX, maxZ, nodeX, nodeZ, eFrom, eTo, eFlags, eCls, eGrade, eSpeed, eWidth, eJid,
-                ePtStart, ptX, ptZ, eLen, junctionNodes, roundabouts, cities.sortedBy { it.key }, companies, pois,
+                ePtStart, ptX, ptZ, eLen, junctionNodes, roundabouts, cities.sortedBy { it.key }, companies, pois, laneN, laneMask,
             )
         }
 
