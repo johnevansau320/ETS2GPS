@@ -42,6 +42,7 @@ class MainActivity : Activity() {
     companion object {
         /** ETS2 runs its clock 19x faster than real time. */
         const val TIME_SCALE = 19f
+        const val LANE_SHOW_M = 50_000f // lane panel appears this far (in game metres) before the junction
     }
 
     private val bg = Executors.newSingleThreadExecutor()
@@ -563,7 +564,7 @@ class MainActivity : Activity() {
         val totM = st.remainingM + afterM
         val totS = st.remainingS + afterS
         routeRemainingM = totM
-        laneView.setLanes(if (next != null && !laneHidden && st.distToNextM * distScale < 2000f) next.lanes else null)
+        laneView.setLanes(if (next != null && !laneHidden && st.distToNextM * distScale < LANE_SHOW_M) next.lanes else null)
         if (next != null) banner.setManeuver(next, n.shortDistance(st.distToNextM), n.instruction(next).replaceFirstChar { it.uppercase() } + (next.towards?.let { " towards $it" } ?: ""), st.following)
         updatePace(n)
         val realMin = totS / paceRatio / 60f // real-world minutes at your actual pace
