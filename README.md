@@ -52,7 +52,7 @@ Pinch / +/- to zoom, double-tap resets zoom.
 
 ## Extras
 
-- **Saved trips**: after planning a route (and any waypoints) tap **Trips > Save current trip** and give it a name. Saved trips keep the destination, waypoints and route type; tap one later to start it from wherever you are, or delete it.
+- **Saved trips**: after planning a route (and any waypoints) tap **Trips > Save current trip** and give it a name. Saved trips keep the destination, waypoints and route type; tap one later to start it from wherever you are, rename it or delete it.
 - **Waypoints**: once a route exists, search a city and choose *Add as waypoint*, long-press the map and choose *Add as waypoint*, or open **Stops** (Search > Stops) to add, remove, reorder or clear them. Waypoints show as numbered blue markers; the app guides you to each in turn ("Waypoint reached") and the distance/ETA cover the whole trip.
 * **POIs** (from the game's own prefab spawn points and map overlays): fuel stations, service centres, rest areas /
   parking, weigh stations, garages, truck dealers. Shown as F / P / S / W badges on the map; the **POI** button lists the

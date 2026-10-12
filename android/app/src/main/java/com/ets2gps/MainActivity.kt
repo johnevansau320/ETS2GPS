@@ -1237,8 +1237,29 @@ class MainActivity : Activity() {
     private fun tripOptions(list: MutableList<SavedTrip>, i: Int) {
         val t = list.getOrNull(i) ?: return
         AlertDialog.Builder(this).setTitle(t.name)
-            .setItems(arrayOf("Start this trip from here", "Delete")) { _, k ->
-                if (k == 0) startSavedTrip(t) else { list.removeAt(i); storeTrips(list); toast("Deleted: ${t.name}") }
+            .setItems(arrayOf("Start this trip from here", "Rename", "Delete")) { _, k ->
+                when (k) {
+                    0 -> startSavedTrip(t)
+                    1 -> renameTrip(list, i)
+                    else -> { list.removeAt(i); storeTrips(list); toast("Deleted: ${t.name}") }
+                }
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun renameTrip(list: MutableList<SavedTrip>, i: Int) {
+        val t = list.getOrNull(i) ?: return
+        val input = EditText(this).apply { setText(t.name); setSingleLine(); selectAll() }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0); addView(input) }
+        AlertDialog.Builder(this).setTitle("Rename trip").setView(box)
+            .setPositiveButton("Rename") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isEmpty() || name == t.name) return@setPositiveButton
+                list.removeAll { it.name == name } // an existing trip with that name is replaced
+                val at = list.indexOfFirst { it === t }.coerceAtLeast(0)
+                list[at] = SavedTrip(name, t.mode, t.dest, t.stops, t.lengthM)
+                storeTrips(list)
+                toast("Renamed to: $name")
             }
             .setNegativeButton("Cancel", null).show()
     }
