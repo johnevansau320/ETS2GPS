@@ -97,13 +97,16 @@ It has the same routing, guidance, lane panel, waypoints, saved trips (stored in
 
 ## PC lane overlay
 
-A small always-on-top window on the PC that shows the lane panel, like the Tachograph overlay.
+A small always-on-top window on the PC that shows the lane panel, like the Tachograph overlay. It is a .NET 8 WPF app (`overlay-dotnet`):
 
-1. Needs PyQt6 on the PC: `pip install PyQt6`.
-2. Start the companion (updated version) and run `overlay\start_lane_overlay.bat` (or `pythonw overlay\lane_overlay.py`). If the companion runs on another PC use `--server http://<pc-ip>:31378`.
-3. Drive with the tablet app (or web app) as usual: whenever it shows the lane panel it sends it to the companion, and the overlay shows the same panel.
+1. Build it once (needs the .NET 8 SDK): `overlay-dotnetuild.ps1`. This makes a single self-contained `publish\Ets2LaneOverlay.exe` (about 63 MB, nothing else to install).
+2. `overlay-dotnet\install.ps1` copies it to `%LOCALAPPDATA%\Programs\ETS2 Lane Overlay`, adds a Start Menu shortcut and can start it with Windows. Or just run the exe.
+3. Start the (updated) companion. If it runs on another PC, start the overlay with `--server http://<pc-ip>:31378` (or right-click > Server address).
+4. Drive with the tablet app (or web app) as usual: whenever it shows the lane panel it sends it to the companion, and the overlay shows the same panel.
 
-Controls: drag to move, drag the edges or corners to resize, mouse wheel to resize, **Ctrl + wheel** or right-click > Opacity slider for opacity, right-click > Size presets, Always on top, Hide when there is no lane data, Show demo lanes (to place it before you drive), Server address, Reset. A tray icon has the same menu. Position, size and opacity are remembered in `%APPDATA%\ETS2-GPS\lane_overlay.json`. ETS2 must run in windowed or borderless mode, otherwise no overlay can appear on top of the game.
+Controls: drag to move, drag the edges or corners to resize, mouse wheel to resize, **Ctrl + wheel** or right-click > Opacity slider for opacity, right-click > Size presets, Always on top, Hide when there is no lane data, Show demo lanes (to place it before you drive), Server address, Reset. A tray icon has the same menu. Position, size and opacity are remembered in `%APPDATA%\ETS2-GPS\lane_overlay_net.json`. ETS2 must run in windowed or borderless mode, otherwise no overlay can appear on top of the game.
+
+`overlay\lane_overlay.py` is the earlier Python / PyQt6 version of the same overlay; it works the same way and can be used instead.
 
 ## Notes and limits
 
