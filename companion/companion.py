@@ -168,6 +168,9 @@ class Speaker:
 
 SPEAKER = Speaker()
 
+# lane panel state pushed by the GPS app (tablet or web) and read by the PC lane overlay
+LANES = {"body": b'{"lanes": null, "caption": ""}', "t": 0.0}
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
     meta = {}
@@ -184,7 +187,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path == "/say":
+        if path == "/lanes":
+            n = min(int(self.headers.get("Content-Length") or 0), 20000)
+            try:
+                body = self.rfile.read(n)
+                json.loads(body.decode("utf-8"))
+                LANES["body"] = body
+                LANES["t"] = time.time()
+                self._reply(200)
+            except ValueError:
+                self._reply(400, b"bad json")
+        elif path == "/say":
             n = min(int(self.headers.get("Content-Length") or 0), 2000)
             text = self.rfile.read(n).decode("utf-8", "ignore")
             self._reply(200 if SPEAKER.say(text) else 500)
@@ -228,6 +241,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/api/telemetry":
             self._telemetry()
+        elif path == "/lanes":
+            data = json.loads(LANES["body"].decode("utf-8"))
+            data["age"] = round(time.time() - LANES["t"], 2) if LANES["t"] else None
+            body = json.dumps(data).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
         elif path == "/say":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             self._reply(200 if SPEAKER.say((q.get("text") or [""])[0]) else 500)

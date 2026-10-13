@@ -555,7 +555,7 @@ class MainActivity : Activity() {
             infoText.text = "Arrived at $destName"
             banner.setMessage("You have arrived")
             n.clear()
-            mapView.routePts = FloatArray(0); mapView.routeEdgePt = IntArray(0); mapView.nextManeuver = null; laneView.setLanes(null)
+            mapView.routePts = FloatArray(0); mapView.routeEdgePt = IntArray(0); mapView.nextManeuver = null; setLaneUi(null)
             hasDest = false
             return
         }
@@ -564,7 +564,7 @@ class MainActivity : Activity() {
         val totM = st.remainingM + afterM
         val totS = st.remainingS + afterS
         routeRemainingM = totM
-        if (!laneHidden && st.lanes != null && st.lanesDistM * distScale < LANE_SHOW_M) laneView.setLanes(st.lanes, n.shortDistance(st.lanesDistM)) else laneView.setLanes(null)
+        if (!laneHidden && st.lanes != null && st.lanesDistM * distScale < LANE_SHOW_M) setLaneUi(st.lanes, n.shortDistance(st.lanesDistM)) else setLaneUi(null)
         if (next != null) banner.setManeuver(next, n.shortDistance(st.distToNextM), n.instruction(next).replaceFirstChar { it.uppercase() } + (next.towards?.let { " towards $it" } ?: ""), st.following)
         updatePace(n)
         val realMin = totS / paceRatio / 60f // real-world minutes at your actual pace
@@ -630,7 +630,7 @@ class MainActivity : Activity() {
         lastNextText = ""
         paceRatio = 1f
         hasDest = false
-        mapView.routePts = FloatArray(0); mapView.routeEdgePt = IntArray(0); mapView.nextManeuver = null; laneView.setLanes(null)
+        mapView.routePts = FloatArray(0); mapView.routeEdgePt = IntArray(0); mapView.nextManeuver = null; setLaneUi(null)
         banner.setMessage(null)
         infoText.text = "No route"
     }
@@ -825,7 +825,7 @@ class MainActivity : Activity() {
         zoomBox.visibility = if (show) View.GONE else View.VISIBLE
         compass.visibility = if (show) View.GONE else View.VISIBLE
         laneHidden = show
-        if (show) laneView.setLanes(null)
+        if (show) setLaneUi(null)
         altText.visibility = if (show) View.GONE else View.VISIBLE
         recentreBtn.visibility = if (show || !mapView.free) View.GONE else View.VISIBLE
         tripBtn.text = if (show) "Map" else "Trip"
@@ -1284,6 +1284,38 @@ class MainActivity : Activity() {
         RouteMode.values().getOrNull(t.mode)?.let { routeMode = it; updateModeButton() }
         waypoints.clear(); waypoints.addAll(t.stops); resumeStops.clear()
         computeRoute(t.dest.x, t.dest.z, t.dest.name, announce = true, keepStops = true)
+    }
+
+    // ----------------------------------------------------------------- lane panel + PC overlay --
+
+    private val laneNet = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var lastLaneJson = ""
+    private var lastLanePush = 0L
+
+    /** Shows the lane panel and relays it to the companion so the PC lane overlay can display it as well. */
+    private fun setLaneUi(lanes: List<Lane>?, caption: String = "") {
+        laneView.setLanes(lanes, caption)
+        val arr = org.json.JSONArray()
+        if (lanes != null) for (l in lanes) {
+            arr.put(org.json.JSONObject().put("a", if (l.angleDeg.isNaN()) org.json.JSONObject.NULL else Math.round(l.angleDeg * 10) / 10.0)
+                .put("p", l.preferred).put("alt", l.altDeg?.let { Math.round(it * 10) / 10.0 } ?: org.json.JSONObject.NULL))
+        }
+        val body = org.json.JSONObject().put("lanes", if (lanes == null) org.json.JSONObject.NULL else arr).put("caption", caption).toString()
+        val now = SystemClock.elapsedRealtime()
+        if (body == lastLaneJson && now - lastLanePush < 2000L) return
+        if (lanes != null && body != lastLaneJson && now - lastLanePush < 400L) return
+        lastLaneJson = body; lastLanePush = now
+        val h = host
+        if (h.isEmpty()) return
+        laneNet.execute {
+            try {
+                val c = java.net.URL("http://$h:31378/lanes").openConnection() as java.net.HttpURLConnection
+                c.connectTimeout = 800; c.readTimeout = 800; c.requestMethod = "POST"; c.doOutput = true
+                c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                c.responseCode
+                c.disconnect()
+            } catch (_: Exception) { }
+        }
     }
 
     private fun syncStops() {

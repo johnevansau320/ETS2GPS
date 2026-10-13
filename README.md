@@ -95,6 +95,16 @@ The same GPS also runs as a web app, served by the companion, so an iPad needs n
 
 It has the same routing, guidance, lane panel, waypoints, saved trips (stored in the browser), POI search, alerts and Trip screen as the Android app. Differences: the Trip screen is a card grid, and routing runs in the browser (a very long route can pause the map for a moment). It needs iPadOS / Safari 16.4 or newer (or a current Chrome, Edge or Firefox). The browser talks only to the companion, which forwards telemetry from the TruckSim GPS server on the PC.
 
+## PC lane overlay
+
+A small always-on-top window on the PC that shows the lane panel, like the Tachograph overlay.
+
+1. Needs PyQt6 on the PC: `pip install PyQt6`.
+2. Start the companion (updated version) and run `overlay\start_lane_overlay.bat` (or `pythonw overlay\lane_overlay.py`). If the companion runs on another PC use `--server http://<pc-ip>:31378`.
+3. Drive with the tablet app (or web app) as usual: whenever it shows the lane panel it sends it to the companion, and the overlay shows the same panel.
+
+Controls: drag to move, drag the edges or corners to resize, mouse wheel to resize, **Ctrl + wheel** or right-click > Opacity slider for opacity, right-click > Size presets, Always on top, Hide when there is no lane data, Show demo lanes (to place it before you drive), Server address, Reset. A tray icon has the same menu. Position, size and opacity are remembered in `%APPDATA%\ETS2-GPS\lane_overlay.json`. ETS2 must run in windowed or borderless mode, otherwise no overlay can appear on top of the game.
+
 ## Notes and limits
 
 * ETS2's map is 1:19. The game's own GPS shows distances as map metres x 19, so the app does too by default

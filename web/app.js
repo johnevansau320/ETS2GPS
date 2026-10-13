@@ -216,8 +216,19 @@ function updateBannerJob() {
   $('bJob2').textContent = parts.join('  ·  '); $('bJob2').classList.toggle('late', late);
 }
 
+let lastLaneJson = '', lastLanePush = 0;
+/** Tells the companion what the lane panel shows, so the PC overlay can display it too. */
+function pushLanes(lanes, caption) {
+  const body = JSON.stringify({ lanes: lanes ? lanes.map((l) => ({ a: Number.isNaN(l.angleDeg) ? null : Math.round(l.angleDeg * 10) / 10, p: !!l.preferred, alt: l.altDeg === null || l.altDeg === undefined ? null : Math.round(l.altDeg * 10) / 10 })) : null, caption: caption || '' });
+  const now = performance.now();
+  if (body === lastLaneJson && now - lastLanePush < 2000) return;
+  if (lanes && body !== lastLaneJson && now - lastLanePush < 400) return;
+  lastLaneJson = body; lastLanePush = now;
+  fetch('/lanes', { method: 'POST', body }).catch(() => {});
+}
 function setLanes(lanes, caption) {
   const cv = $('lanes');
+  pushLanes(tripOpen ? null : lanes, caption);
   if (!lanes || tripOpen) { cv.style.display = 'none'; return; }
   cv.style.display = 'block';
   LanePanel.draw(cv, lanes, caption || '');
