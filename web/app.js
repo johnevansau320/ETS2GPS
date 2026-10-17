@@ -15,6 +15,7 @@ let map = null, router = null, nav = null, truck = null;
 const motion = new MotionFilter(), elev = new ElevationLog();
 let routeMode = ROUTE_MODES.find((m) => m.key === ls.get('mode', 'HEAVY')) || ROUTE_MODES[0];
 let distScale = ls.get('scale', 19);
+let avoidFerries = ls.get('ferries', false);
 let hasDest = false, destX = 0, destZ = 0, destName = '', destIsPoi = false;
 let resume = null; // {x,z,name,stops} while a POI detour is active
 let waypoints = [];
@@ -165,6 +166,7 @@ async function loadMap() {
     const rt = new Router(m);
     rt.mode = routeMode;
     rt.setAvoid(avoidPoints);
+    rt.avoidFerries = avoidFerries;
     map = m; router = rt; nav = new Navigator(m, rt); nav.distScale = distScale;
     mapView.map = m;
     setBannerMessage(null);
@@ -358,7 +360,7 @@ function computeRoute(x, z, name, opts = {}) {
       if (node < 0) { setBannerMessage('Destination is not reachable by road'); return; }
       const remaining = Math.max(1, m.eLen[snap.de >> 1] - snap.along);
       const res = r.route(snap.de, remaining, node);
-      if (!res) { setBannerMessage('No route found'); return; }
+      if (!res) { setBannerMessage(r.avoidFerries ? 'No route without ferries - allow ferries in Settings' : 'No route found'); return; }
       let am = 0, asec = 0, prev = node;
       if (legIsStop) for (const c of chain) {
         const nn = r.nearestMainNode(c.x, c.z);
@@ -457,7 +459,7 @@ function saveCurrentTrip() {
     buttons: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: (v) => {
       const name = (v || '').trim() || def;
       const list = loadTrips().filter((t) => t.name !== name);
-      list.unshift({ name, mode: routeMode.key, dest: { x: destX, z: destZ, name: destName }, stops: waypoints.map((w) => ({ ...w })), len: Math.max(0, routeRemainingM) });
+      list.unshift({ name, mode: routeMode.key, dest: { x: destX, z: destZ, name: destName }, stops: waypoints.map((w) => ({ ...w })), len: Math.max(0, routeRemainingM), ferries: avoidFerries });
       ls.set('trips', list); toast('Trip saved: ' + name);
     } }],
   });
@@ -496,6 +498,7 @@ function startSavedTrip(t) {
   if (!truck || !truck.connected) { toast('Start the game first - no truck position yet'); return; }
   if (routing) { toast('Still planning - try again in a moment'); return; }
   const md = ROUTE_MODES.find((m) => m.key === t.mode); if (md) setRouteMode(md, false);
+  setAvoidFerries(!!t.ferries, false);
   waypoints = t.stops.map((w) => ({ ...w })); resume = null;
   computeRoute(t.dest.x, t.dest.z, t.dest.name, { announce: true, keepStops: true });
 }
@@ -771,6 +774,8 @@ function showSettings() {
         l.innerHTML = '<input type="radio" name="rm" value="' + md.key + '"' + (md.key === routeMode.key ? ' checked' : '') + '> ' + md.help;
         body.appendChild(l);
       });
+      const fl = document.createElement('label'); fl.style.marginTop = '8px';
+      fl.innerHTML = '<input type="checkbox" id="setFerries"' + (avoidFerries ? ' checked' : '') + '> Avoid ferries and car trains (some places may become unreachable)'; body.appendChild(fl);
       const clr = document.createElement('button'); clr.className = 'inline'; clr.textContent = 'Clear avoided roads (' + avoidPoints.length + ')';
       clr.onclick = () => { clearAvoid(); clr.textContent = 'Clear avoided roads (0)'; }; body.appendChild(clr);
       h('Voice');
@@ -789,6 +794,11 @@ function showSettings() {
     buttons: [{ label: 'Cancel' }, { label: 'Save + reload map', fn: () => { saveSettings(); loadMap(); } }, { label: 'Save', primary: true, fn: saveSettings }],
   });
 }
+function setAvoidFerries(on, reroute = true) {
+  avoidFerries = on; ls.set('ferries', on);
+  if (router) router.avoidFerries = on;
+  if (reroute) rerouteForModeChange();
+}
 function saveSettings() {
   const body = $('modal');
   const rm = body.querySelector('input[name=rm]:checked');
@@ -798,6 +808,9 @@ function saveSettings() {
   const vo = body.querySelector('input[name=vo]:checked');
   if (vo) { voice.output = parseInt(vo.value, 10); ls.set('voice_out', voice.output); }
   voice.enabled = !!($('setVoice') || {}).checked; ls.set('voice', voice.enabled); updateVoiceButton();
+  const ferryOn = !!($('setFerries') || {}).checked;
+  const ferryChanged = ferryOn !== avoidFerries;
+  if (ferryChanged) setAvoidFerries(ferryOn, !(md && md.key !== routeMode.key));
   if (md && md.key !== routeMode.key) setRouteMode(md);
 }
 function updateVoiceButton() { $('btnVoice').textContent = voice.enabled ? 'Voice on' : 'Voice off'; }

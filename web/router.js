@@ -79,6 +79,7 @@ class Router {
     this.gStamp = new Int32Array(ec * 2); this.gVal = new Float32Array(ec * 2);
     this.prev = new Int32Array(ec * 2); this.closed = new Int32Array(ec * 2);
     this.gen = 0;
+    this.avoidFerries = false; // never use ferries or car trains
     this._mode = ROUTE_MODES[0];
     this.computeMainComponent();
     this.rebuildCosts();
@@ -262,6 +263,7 @@ class Router {
         const nx = this.outList[i];
         if ((nx >> 1) === curE) continue; // no U-turn on the same road
         if (this.blocked[nx >> 1]) continue;
+        if (this.avoidFerries && m.isFerry(nx >> 1)) continue;
         if (this.closed[nx] === gen) continue;
         const ng = g + this.edgeCost(nx);
         if (this.gStamp[nx] !== gen || ng < this.gVal[nx]) {
