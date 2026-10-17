@@ -67,6 +67,7 @@ Pinch / +/- to zoom, double-tap resets zoom.
 * **Alerts**: low fuel and "rest needed in 30 / 10 minutes" are spoken with the nearest fuel station / rest area.
 * **Towards**: turn prompts say which town the road heads for ("turn right towards Hamburg"); the status line shows
   "Near <town>".
+* **Avoid ferries**: gear -> *Avoid ferries and car trains* keeps routes off every ferry and train link (the Channel crossing, for example); if a place can only be reached that way the bar says so. Saved trips remember it.
 * **Route types** (gear -> Route type, or the quick button in the bottom bar that cycles Heavy / Fast / Tour):
   **Heavy transport** (default) strongly prefers motorways and major roads and avoids small roads and tight town
   junctions; **Fastest** is pure travel time; **Tourist** prefers smaller, scenic roads and avoids motorways. Road grades

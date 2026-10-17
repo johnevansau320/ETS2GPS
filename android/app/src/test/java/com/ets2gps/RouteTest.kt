@@ -159,4 +159,28 @@ class RouteTest {
         }
         org.junit.Assert.assertTrue(withLanes > 0)
     }
+
+    @Test
+    fun avoidFerriesBlocksTheChannelCrossing() {
+        val path = System.getenv("ETS2_MAP")
+        assumeTrue(path != null && File(path).exists())
+        val m = MapData.load(File(path!!))
+        val r = Router(m)
+        val a = m.findCity("aberdeen")!!; val b = m.findCity("calais")!!
+        val na = r.nearestMainNode(a.x, a.z); val nb = r.nearestMainNode(b.x, b.z)
+        val de = r.outAt(na, 0)
+        r.avoidFerries = false
+        val withFerry = r.route(de, m.eLen[de shr 1], nb)
+        assertNotNull(withFerry)
+        r.avoidFerries = true
+        val without = r.route(de, m.eLen[de shr 1], nb)
+        org.junit.Assert.assertNull("no route may exist without the Channel crossing", without)
+        // a route on the same landmass is unaffected and never uses a ferry link
+        val p = m.findCity("paris")!!; val br = m.findCity("berlin")!!
+        val np = r.nearestMainNode(p.x, p.z); val nbr = r.nearestMainNode(br.x, br.z)
+        val dp = r.outAt(np, 0)
+        val land = r.route(dp, m.eLen[dp shr 1], nbr)
+        assertNotNull(land)
+        org.junit.Assert.assertTrue(land!!.edges.none { m.isFerry(it shr 1) })
+    }
 }

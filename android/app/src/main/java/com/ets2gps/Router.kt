@@ -43,6 +43,9 @@ class Router(val map: MapData) {
     private val blocked = BooleanArray(map.edgeCount) // roads the user asked to avoid
     private var minFactor = 1f
 
+    /** Never use ferries or car trains (the map's ferry / train links). */
+    var avoidFerries = false
+
     var mode: RouteMode = RouteMode.HEAVY
         set(v) { field = v; rebuildCosts() }
 
@@ -295,6 +298,7 @@ class Router(val map: MapData) {
                 val nx = outAt(node, i)
                 if (nx shr 1 == curE) continue // no U-turn on the same road
                 if (blocked[nx shr 1]) continue
+                if (avoidFerries && map.isFerry(nx shr 1)) continue
                 if (closedStamp[nx] == gen) continue
                 val ng = g + edgeCost(nx)
                 if (gStamp[nx] != gen || ng < gVal[nx]) {

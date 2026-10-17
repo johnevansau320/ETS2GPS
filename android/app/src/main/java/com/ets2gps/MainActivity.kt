@@ -80,6 +80,9 @@ class MainActivity : Activity() {
     private lateinit var voice: Voice
     private lateinit var voiceBtn: Button
     private lateinit var modeBtn: Button
+    private var avoidFerries: Boolean
+        get() = prefs.getBoolean("avoid_ferries", false)
+        set(v) { prefs.edit().putBoolean("avoid_ferries", v).apply(); router?.avoidFerries = v }
     private var routeMode: RouteMode
         get() = RouteMode.values().getOrElse(prefs.getInt("route_mode", 0)) { RouteMode.HEAVY }
         set(v) {
@@ -436,6 +439,7 @@ class MainActivity : Activity() {
                 val m = MapData.load(f)
                 val r = Router(m)
                 r.mode = routeMode
+                r.avoidFerries = avoidFerries
                 loadAvoid()
                 r.setAvoid(avoidPoints)
                 val n = Navigator(m, r)
@@ -674,7 +678,7 @@ class MainActivity : Activity() {
                 if (node < 0) { ui.post { banner.setMessage("Destination is not reachable by road") }; return@execute }
                 val remaining = (m.eLen[snap.de shr 1] - snap.along).coerceAtLeast(1f)
                 val res = r.route(snap.de, remaining, node)
-                if (res == null) { ui.post { banner.setMessage("No route found") }; return@execute }
+                if (res == null) { ui.post { banner.setMessage(if (r.avoidFerries) "No route without ferries - allow ferries in Settings" else "No route found") }; return@execute }
                 // length / time of the remaining legs (waypoint to waypoint, then to the destination)
                 var am = 0f; var asec = 0f; var prev = node
                 if (legIsStop) for ((cx, cz) in chain) {
@@ -1184,7 +1188,7 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------------- saved trips --
 
-    private class SavedTrip(val name: String, val mode: Int, val dest: Stop, val stops: List<Stop>, val lengthM: Float)
+    private class SavedTrip(val name: String, val mode: Int, val dest: Stop, val stops: List<Stop>, val lengthM: Float, val avoidFerries: Boolean = false)
 
     private fun stopJson(s: Stop) = org.json.JSONObject().put("x", s.x.toDouble()).put("z", s.z.toDouble()).put("n", s.name)
     private fun stopFrom(o: org.json.JSONObject) = Stop(o.getDouble("x").toFloat(), o.getDouble("z").toFloat(), o.optString("n", "Stop"))
@@ -1197,7 +1201,7 @@ class MainActivity : Activity() {
                 val o = arr.getJSONObject(i)
                 val st = o.getJSONArray("stops")
                 out.add(SavedTrip(o.getString("name"), o.optInt("mode", 0), stopFrom(o.getJSONObject("dest")),
-                    (0 until st.length()).map { stopFrom(st.getJSONObject(it)) }, o.optDouble("len", 0.0).toFloat()))
+                    (0 until st.length()).map { stopFrom(st.getJSONObject(it)) }, o.optDouble("len", 0.0).toFloat(), o.optBoolean("ferry", false)))
             }
         } catch (_: Exception) { }
         return out
@@ -1206,7 +1210,7 @@ class MainActivity : Activity() {
     private fun storeTrips(list: List<SavedTrip>) {
         val arr = org.json.JSONArray()
         for (t in list) arr.put(org.json.JSONObject().put("name", t.name).put("mode", t.mode).put("dest", stopJson(t.dest))
-            .put("stops", org.json.JSONArray().also { a -> t.stops.forEach { a.put(stopJson(it)) } }).put("len", t.lengthM.toDouble()))
+            .put("stops", org.json.JSONArray().also { a -> t.stops.forEach { a.put(stopJson(it)) } }).put("len", t.lengthM.toDouble()).put("ferry", t.avoidFerries))
         prefs.edit().putString("trips", arr.toString()).apply()
     }
 
@@ -1221,7 +1225,7 @@ class MainActivity : Activity() {
                 val name = input.text.toString().trim().ifEmpty { "$startLabel \u2192 $destName" }
                 val list = loadTrips()
                 list.removeAll { it.name == name } // same name = replace
-                list.add(0, SavedTrip(name, routeMode.ordinal, Stop(destX, destZ, destName), ArrayList(waypoints), routeRemainingM.coerceAtLeast(0f)))
+                list.add(0, SavedTrip(name, routeMode.ordinal, Stop(destX, destZ, destName), ArrayList(waypoints), routeRemainingM.coerceAtLeast(0f), avoidFerries))
                 storeTrips(list)
                 toast("Trip saved: $name")
             }
@@ -1270,7 +1274,7 @@ class MainActivity : Activity() {
                 if (name.isEmpty() || name == t.name) return@setPositiveButton
                 list.removeAll { it.name == name } // an existing trip with that name is replaced
                 val at = list.indexOfFirst { it === t }.coerceAtLeast(0)
-                list[at] = SavedTrip(name, t.mode, t.dest, t.stops, t.lengthM)
+                list[at] = SavedTrip(name, t.mode, t.dest, t.stops, t.lengthM, t.avoidFerries)
                 storeTrips(list)
                 toast("Renamed to: $name")
             }
@@ -1282,6 +1286,7 @@ class MainActivity : Activity() {
         if (truck?.connected != true) { toast("Start the game first - no truck position yet"); return }
         if (routing.get()) { toast("Still planning - try again in a moment"); return }
         RouteMode.values().getOrNull(t.mode)?.let { routeMode = it; updateModeButton() }
+        avoidFerries = t.avoidFerries
         waypoints.clear(); waypoints.addAll(t.stops); resumeStops.clear()
         computeRoute(t.dest.x, t.dest.z, t.dest.name, announce = true, keepStops = true)
     }
@@ -1488,6 +1493,8 @@ class MainActivity : Activity() {
         }
         box.addView(TextView(this).apply { text = "Route type"; textSize = 14f; setTypeface(typeface, Typeface.BOLD) })
         box.addView(modeGroup)
+        val ferryBox = CheckBox(this).apply { text = "Avoid ferries and car trains (some places may become unreachable)"; isChecked = avoidFerries }
+        box.addView(ferryBox)
         box.addView(button("Clear avoided roads (${avoidPoints.size})") { clearAvoid() })
         box.addView(hostEdit); box.addView(scaleEdit); box.addView(voiceBox); box.addView(outGroup); box.addView(testBtn); box.addView(help)
         fun save() {
@@ -1495,11 +1502,13 @@ class MainActivity : Activity() {
             val sc = scaleEdit.text.toString().toFloatOrNull()
             if (sc != null && sc > 0f) { distScale = sc; nav?.distScale = sc }
             voice.enabled = voiceBox.isChecked
+            val ferryChanged = ferryBox.isChecked != avoidFerries
+            if (ferryChanged) avoidFerries = ferryBox.isChecked
             val msel = modeGroup.checkedRadioButtonId - 2000
             if (msel in RouteMode.values().indices && RouteMode.values()[msel] != routeMode) {
                 routeMode = RouteMode.values()[msel]
                 rerouteForModeChange()
-            }
+            } else if (ferryChanged) rerouteForModeChange()
             val sel = outGroup.checkedRadioButtonId - 1000
             if (sel in 0..2) { voice.output = sel; prefs.edit().putInt("voice_out", sel).apply() }
             updateVoiceButton()
