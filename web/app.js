@@ -478,18 +478,25 @@ function showTrips() {
     return t.name + '\n' + (km >= 1 ? Math.round(km) + ' km · ' : '') + t.stops.length + ' waypoint' + (t.stops.length === 1 ? '' : 's') + ' · ' + md;
   });
   modal({
-    title: 'Saved trips', message: list.length ? '' : 'No saved trips yet. Plan a route (and any waypoints), then tap Save current trip.',
+    title: 'Saved trips', message: list.length ? '' : 'No saved trips yet. Use Plan a trip (no game needed), or plan a route while driving and tap Save current trip.',
     items: rows, onItem: (i) => tripOptions(i),
-    buttons: [{ label: 'Close' }, { label: 'Save current trip', primary: true, fn: () => { setTimeout(saveCurrentTrip, 0); } }],
+    buttons: [{ label: 'Close' }, { label: 'Plan a trip…', fn: () => { plan = newPlan(); setTimeout(showPlanner, 0); } }, { label: 'Save current trip', primary: true, fn: () => { setTimeout(saveCurrentTrip, 0); } }],
   });
 }
 function tripOptions(i) {
   const list = loadTrips(), t = list[i]; if (!t) return;
+  const items = [];
+  if (t.start) items.push('Drive this trip (to its start first)');
+  items.push(t.start ? 'Drive from here (skip its start)' : 'Start this trip from here');
+  items.push('View / edit the plan', 'Rename', 'Delete');
   modal({
-    title: t.name, items: ['Start this trip from here', 'Rename', 'Delete'],
+    title: t.name, items,
     onItem: (k) => {
-      if (k === 0) startSavedTrip(t);
-      else if (k === 1) modal({ title: 'Rename trip', input: { value: t.name }, buttons: [{ label: 'Cancel' }, { label: 'Rename', primary: true, fn: (v) => {
+      const what = items[k];
+      if (what.startsWith('Drive this trip')) startSavedTrip(t, true);
+      else if (what.startsWith('Drive from here') || what.startsWith('Start this trip')) startSavedTrip(t);
+      else if (what.startsWith('View')) editSavedTrip(t);
+      else if (what === 'Rename') modal({ title: 'Rename trip', input: { value: t.name }, buttons: [{ label: 'Cancel' }, { label: 'Rename', primary: true, fn: (v) => {
         const name = (v || '').trim(); if (!name || name === t.name) return;
         const l2 = loadTrips().filter((x, idx) => idx === i || x.name !== name);
         const at = l2.findIndex((x) => x.name === t.name); if (at >= 0) l2[at] = { ...t, name };
@@ -500,13 +507,15 @@ function tripOptions(i) {
     buttons: [{ label: 'Cancel' }],
   });
 }
-function startSavedTrip(t) {
+function startSavedTrip(t, viaStart = false) {
   if (!map) { toast('Map not loaded yet'); return; }
   if (!truck || !truck.connected) { toast('Start the game first - no truck position yet'); return; }
   if (routing) { toast('Still planning - try again in a moment'); return; }
   const md = ROUTE_MODES.find((m) => m.key === t.mode); if (md) setRouteMode(md, false);
   setAvoidFerries(!!t.ferries, false);
   waypoints = t.stops.map((w) => ({ ...w })); resume = null;
+  // a planned trip begins at its own start: drive there first unless the truck is already close to it
+  if (viaStart && t.start && Math.hypot(t.start.x - motion.x, t.start.z - motion.z) > 1500) waypoints.unshift({ x: t.start.x, z: t.start.z, name: t.start.name });
   computeRoute(t.dest.x, t.dest.z, t.dest.name, { announce: true, keepStops: true });
 }
 
@@ -519,6 +528,7 @@ function avoidRoadAt(x, z) {
 }
 function clearAvoid() { avoidPoints = []; ls.set('avoid', []); if (router) router.setAvoid([]); toast('Avoided roads cleared'); rerouteForModeChange(); }
 mapView.onLongPress = (x, z) => {
+  if (mapView.planMode) { planPointMenu(x, z); return; }
   const canStop = hasDest && nav && nav.active;
   const items = canStop ? ['Navigate here', 'Add as waypoint', 'Avoid road here'] : ['Navigate here', 'Avoid road here'];
   modal({
@@ -827,6 +837,7 @@ $('btnTrip').onclick = toggleTrip;
 $('btnSearch').onclick = () => showSearch(false);
 $('btnStops').onclick = showStops;
 $('btnTrips').onclick = showTrips;
+$('btnPlan').onclick = () => showPlanner();
 $('btnMode').onclick = () => { const next = ROUTE_MODES[(ROUTE_MODES.indexOf(routeMode) + 1) % ROUTE_MODES.length]; setRouteMode(next); toast('Route mode: ' + next.label); voice.say(next.label + ' routing'); };
 $('btnVoice').onclick = () => { voice.enabled = !voice.enabled; ls.set('voice', voice.enabled); updateVoiceButton(); voice.unlock(); if (voice.enabled) voice.say('Voice on'); };
 $('btnPoi').onclick = showPoiPicker;
@@ -837,7 +848,7 @@ $('zIn').onclick = () => mapView.zoomBy(1.3);
 $('zOut').onclick = () => mapView.zoomBy(1 / 1.3);
 $('recentre').onclick = () => mapView.recentre();
 $('alt').onclick = showElevation;
-mapView.onFreeChanged = (f) => { $('recentre').style.display = f && !tripOpen ? 'block' : 'none'; };
+mapView.onFreeChanged = (f) => { $('recentre').style.display = f && !tripOpen && !mapView.planMode ? 'block' : 'none'; };
 $('btnMode').textContent = routeMode.short; updateVoiceButton();
 
 function frame() {

@@ -111,7 +111,7 @@ class MapView(ctx: Context) : View(ctx) {
 
     private val scaleDetector = ScaleGestureDetector(ctx, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(det: ScaleGestureDetector): Boolean {
-            userZoom = (userZoom * det.scaleFactor).coerceIn(0.35f, 10f)
+            userZoom = (userZoom * det.scaleFactor).coerceIn(minZoom, 10f)
             invalidate()
             return true
         }
@@ -123,13 +123,13 @@ class MapView(ctx: Context) : View(ctx) {
         }
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
-            userZoom = 1f
+            if (!planMode) userZoom = 1f
             invalidate()
             return true
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-            if (scaleDetector.isInProgress || e2.pointerCount > 1 || !hasFix || map == null) return false
+            if (scaleDetector.isInProgress || e2.pointerCount > 1 || (!hasFix && !planMode) || map == null) return false
             if (!free) enterFree()
             val s = pxPerM()
             val b = freeBearing
@@ -162,7 +162,7 @@ class MapView(ctx: Context) : View(ctx) {
     }
 
     fun zoomBy(f: Float) {
-        userZoom = (userZoom * f).coerceIn(0.35f, 10f)
+        userZoom = (userZoom * f).coerceIn(minZoom, 10f)
         invalidate()
     }
 
@@ -183,7 +183,7 @@ class MapView(ctx: Context) : View(ctx) {
     }
 
     private fun toWorld(sx: Float, sy: Float): Pair<Float, Float>? {
-        if (!hasFix) return null
+        if (!hasFix && !planMode) return null
         val s = pxPerM()
         val px = if (free) width / 2f else pivotX()
         val py = if (free) height / 2f else pivotY()
@@ -220,6 +220,25 @@ class MapView(ctx: Context) : View(ctx) {
     private var lastTick = 0L
     var speedKmh = 0f
     var assets: MapAssets? = null
+
+    // plan mode: the map shows a planned trip (north up, any zoom, no truck) instead of following the truck
+    var planMode = false
+        private set
+    var planPts = FloatArray(0)
+    var planEdgePt = IntArray(0)
+    class Pin(val x: Float, val z: Float, val label: String, val color: Int)
+    var pins: List<Pin> = emptyList()
+    private val minZoom get() = if (planMode) 0.004f else 0.35f
+
+    fun showPlan(cx: Float, cz: Float, zoom: Float) {
+        planMode = true; free = true; freeBearing = 0f; freeCx = cx; freeCz = cz; userZoom = zoom
+        invalidate()
+    }
+
+    fun hidePlan() {
+        planMode = false; free = false; pins = emptyList(); planPts = FloatArray(0); planEdgePt = IntArray(0); userZoom = 1f
+        invalidate()
+    }
 
     private fun ecam(h: Float, py: Float) = (py + 0.12f * h) * kotlin.math.tan(tiltMax)
 
@@ -282,7 +301,7 @@ class MapView(ctx: Context) : View(ctx) {
         val nowT = android.os.SystemClock.uptimeMillis()
         val dtT = min(0.1f, max(0f, (nowT - lastTick) / 1000f)); lastTick = nowT
         if (speedKmh > 15f) driving = true else if (speedKmh < 12f) driving = false
-        val target = if (driving && !free && hasFix && m != null) tiltMax else 0f
+        val target = if (driving && !free && hasFix && m != null && !planMode) tiltMax else 0f
         if (abs(tilt - target) > 0.0005f) {
             tilt += (target - tilt).coerceIn(-dtT * 1.6f, dtT * 1.6f)
             postInvalidateOnAnimation()
@@ -293,7 +312,7 @@ class MapView(ctx: Context) : View(ctx) {
             canvas.drawText("No map loaded - open settings to download it from your PC", width / 2f, height / 2f, msg)
             return
         }
-        if (!hasFix) {
+        if (!hasFix && !planMode) {
             canvas.drawText("Waiting for the game...", width / 2f, height * 0.5f, msg)
             return
         }
@@ -314,7 +333,8 @@ class MapView(ctx: Context) : View(ctx) {
         val showLocal = zoomFactor > 0.3f
         val showJunction = zoomFactor > 0.45f
         bandCounts.fill(0)
-        m.queryEdges(cx, cz, radius) { e ->
+        val drawRoads = !(planMode && zoomFactor < 0.06f) // zoomed far out while planning: just the route and the towns
+        if (drawRoads) m.queryEdges(cx, cz, radius) { e ->
             val cls = m.eCls[e].toInt().coerceIn(0, 3)
             if ((cls == 0 && !showLocal) || (cls == 3 && !showJunction)) return@queryEdges
             val a = m.ePtStart[e]
@@ -368,16 +388,18 @@ class MapView(ctx: Context) : View(ctx) {
         }
 
         // route
-        if (routePts.isNotEmpty() && routeEdgePt.isNotEmpty()) {
-            val total = routePts.size / 2
+        val rp0 = if (planMode) planPts else routePts
+        val re0 = if (planMode) planEdgePt else routeEdgePt
+        if (rp0.isNotEmpty() && re0.isNotEmpty()) {
+            val total = rp0.size / 2
             val startEdge = max(0, routeIdx - 1)
-            val first = routeEdgePt[min(startEdge, routeEdgePt.size - 1)]
-            val last = min(total, first + 6000)
+            val first = if (planMode) 0 else re0[min(startEdge, re0.size - 1)]
+            val last = if (planMode) total else min(total, first + 6000)
             for (pth in routePaths) pth.reset()
             routeUsed.fill(false)
             var cur = -1; var lx = 0f; var ly = 0f; var ls = 1f
             for (p in first until last) {
-                proj(routePts[p * 2], routePts[p * 2 + 1])
+                proj(rp0[p * 2], rp0[p * 2 + 1])
                 if (p > first) {
                     val sc = (ls + qs) / 2f
                     if (sc < 0.28f) cur = -1
@@ -398,7 +420,7 @@ class MapView(ctx: Context) : View(ctx) {
 
         // big area (city) names
         if (zoomFactor < 1.8f) {
-            val size = (26f * Math.pow(zoomFactor.toDouble(), 0.35).toFloat()).coerceIn(20f, 34f) * d
+            val size = (26f * Math.pow(zoomFactor.toDouble(), 0.35).toFloat()).coerceIn(if (planMode) 11f else 20f, 34f) * d
             cityText.textSize = size; cityShadow.textSize = size
             for (c in m.cities) {
                 if (abs2(c.x - cx, c.z - cz) > radius * radius) continue
@@ -511,8 +533,19 @@ class MapView(ctx: Context) : View(ctx) {
             }
         }
 
+        // planned trip: start, stops and destination pins
+        if (planMode) for (pin in pins) {
+            proj(pin.x, pin.z)
+            if (qx < -60 || qx > width + 60 || qy < -60 || qy > height + 60) continue
+            stopBg.color = pin.color
+            canvas.drawCircle(qx, qy, 20f * d, stopBg)
+            canvas.drawCircle(qx, qy, 20f * d, markerEdge)
+            poiTxt.textSize = 22f * d
+            canvas.drawText(pin.label, qx, qy + 8f * d, poiTxt)
+        }
+
         // waypoints
-        for (i in 0 until stops.size / 2) {
+        for (i in 0 until (if (planMode) 0 else stops.size / 2)) {
             proj(stops[i * 2], stops[i * 2 + 1])
             if (qx < -60 || qx > width + 60 || qy < -60 || qy > height + 60) continue
             val x = qx; val y = qy
@@ -527,7 +560,7 @@ class MapView(ctx: Context) : View(ctx) {
         }
 
         // next maneuver marker on the road
-        val nm = nextManeuver
+        val nm = if (planMode) null else nextManeuver
         if (nm != null) {
             proj(nm.x, nm.z)
             if (qx > -80 && qx < width + 80 && qy > -80 && qy < height + 80) {
@@ -556,6 +589,8 @@ class MapView(ctx: Context) : View(ctx) {
             )
             canvas.drawRect(0f, 0f, width.toFloat(), fadeTo, hazePaint)
         }
+
+        if (planMode) return
 
         // truck (flat, at the pivot, heading relative to the current view)
         val tx = px; val ty = py

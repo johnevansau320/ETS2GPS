@@ -59,6 +59,11 @@ html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font
 #modal { background:#1c2431; border-radius:14px; width:min(560px,92vw); max-height:86vh; display:flex; flex-direction:column; box-shadow:0 8px 40px #000; }
 #modal h2 { margin:0; padding:16px 18px 6px; font-size:20px; }
 #modal .body { padding:6px 18px; overflow:auto; flex:1; font-size:15px; line-height:1.4; }
+#modal .acts { flex-wrap:wrap; }
+#planbar { left:50%; transform:translateX(-50%); bottom:96px; max-width:94vw; background:rgba(14,18,24,.92); border-radius:12px; padding:10px 12px; text-align:center; display:none; z-index:6; }
+#planbar #planText { font-size:17px; font-weight:600; white-space:pre-line; margin-bottom:8px; }
+#planbar button { margin:3px 4px; padding:0 16px; height:46px; background:var(--btn); color:#fff; border:0; border-radius:4px; font-size:16px; font-family:inherit; }
+#planbar button.primary { background:rgb(25,118,210); }
 #modal .list > div { padding:12px 6px; border-bottom:1px solid rgba(255,255,255,.1); white-space:pre-line; }
 #modal .list > div:active { background:#2a3648; }
 #modal input[type=text], #modal input[type=number] { -webkit-user-select:text; user-select:text; width:100%; padding:10px; font-size:17px; border-radius:6px; border:1px solid #445; background:#10151c; color:#fff; margin:6px 0; }
@@ -89,6 +94,7 @@ html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font
   <button class="btn" id="btnSearch">Search</button>
   <button class="btn" id="btnStops">Stops</button>
   <button class="btn" id="btnTrips">Trips</button>
+  <button class="btn" id="btnPlan">Plan</button>
   <button class="btn" id="btnMode">Heavy</button>
   <button class="btn" id="btnVoice">Voice on</button>
   <button class="btn" id="btnPoi">POI</button>
@@ -100,6 +106,7 @@ html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font
 <div id="zoom" class="abs"><button class="zbtn" id="zIn">+</button><button class="zbtn" id="zOut">−</button></div>
 <canvas id="compass" class="abs"></canvas>
 <div id="alt" class="abs">-- m</div>
+<div id="planbar" class="abs"><div id="planText"></div><button id="planEdit">Edit plan</button><button id="planSave">Save trip</button><button id="planDrive" class="primary">Drive this trip</button><button id="planDone">Done</button></div>
 <button id="recentre" class="abs">◎  Recentre</button>
 <div id="status" class="abs"></div>
 
@@ -121,5 +128,6 @@ html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font
 <script src="assets.js"></script>
 <script src="mapview.js"></script>
 <script src="app.js"></script>
+<script src="planner.js"></script>
 </body>
 </html>

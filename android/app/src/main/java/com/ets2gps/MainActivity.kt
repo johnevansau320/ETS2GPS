@@ -31,6 +31,7 @@ import java.io.File
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import java.net.HttpURLConnection
@@ -260,7 +261,8 @@ class MainActivity : Activity() {
         root.addView(recentreBtn, FrameLayout.LayoutParams(dp(150), dp(52), Gravity.END or Gravity.BOTTOM).apply {
             rightMargin = dp(24); bottomMargin = dp(96)
         })
-        mapView.onFreeChanged = { free -> recentreBtn.visibility = if (free) View.VISIBLE else View.GONE }
+        mapView.onFreeChanged = { free -> recentreBtn.visibility = if (free && !planning) View.VISIBLE else View.GONE }
+        buildPlanBar(root)
 
         // lane guidance: centred under the green bar, shown when the next junction has lane data
         laneView = LaneView(this)
@@ -349,6 +351,7 @@ class MainActivity : Activity() {
         menuButton(button("Search") { showSearch() })
         menuButton(button("Stops") { showStops() })
         menuButton(button("Trips") { showTrips() })
+        menuButton(button("Plan") { showPlanner() })
         modeBtn = button("Heavy") { cycleRouteMode() }
         menuButton(modeBtn)
         updateModeButton()
@@ -858,7 +861,7 @@ class MainActivity : Activity() {
         laneHidden = show
         if (show) setLaneUi(null)
         altText.visibility = if (show) View.GONE else View.VISIBLE
-        recentreBtn.visibility = if (show || !mapView.free) View.GONE else View.VISIBLE
+        recentreBtn.visibility = if (show || !mapView.free || planning) View.GONE else View.VISIBLE
         tripBtn.text = if (show) "Map" else "Trip"
         banner.visibility = if (show) View.GONE else View.VISIBLE // the dashboard uses the whole screen
         bottomBar.visibility = if (show) View.GONE else View.VISIBLE
@@ -1196,6 +1199,7 @@ class MainActivity : Activity() {
     }
 
     private fun confirmDestination(x: Float, z: Float) {
+        if (planning) { planPointMenu(x, z); return }
         val canStop = hasDest && nav?.active == true
         val items = if (canStop) arrayOf("Navigate here", "Add as waypoint", "Avoid road here") else arrayOf("Navigate here", "Avoid road here")
         AlertDialog.Builder(this)
@@ -1215,7 +1219,7 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------------- saved trips --
 
-    private class SavedTrip(val name: String, val mode: Int, val dest: Stop, val stops: List<Stop>, val lengthM: Float, val avoidFerries: Boolean = false)
+    private class SavedTrip(val name: String, val mode: Int, val dest: Stop, val stops: List<Stop>, val lengthM: Float, val avoidFerries: Boolean = false, val start: Stop? = null)
 
     private fun stopJson(s: Stop) = org.json.JSONObject().put("x", s.x.toDouble()).put("z", s.z.toDouble()).put("n", s.name)
     private fun stopFrom(o: org.json.JSONObject) = Stop(o.getDouble("x").toFloat(), o.getDouble("z").toFloat(), o.optString("n", "Stop"))
@@ -1228,7 +1232,8 @@ class MainActivity : Activity() {
                 val o = arr.getJSONObject(i)
                 val st = o.getJSONArray("stops")
                 out.add(SavedTrip(o.getString("name"), o.optInt("mode", 0), stopFrom(o.getJSONObject("dest")),
-                    (0 until st.length()).map { stopFrom(st.getJSONObject(it)) }, o.optDouble("len", 0.0).toFloat(), o.optBoolean("ferry", false)))
+                    (0 until st.length()).map { stopFrom(st.getJSONObject(it)) }, o.optDouble("len", 0.0).toFloat(), o.optBoolean("ferry", false),
+                    if (o.has("start")) stopFrom(o.getJSONObject("start")) else null))
             }
         } catch (_: Exception) { }
         return out
@@ -1237,7 +1242,8 @@ class MainActivity : Activity() {
     private fun storeTrips(list: List<SavedTrip>) {
         val arr = org.json.JSONArray()
         for (t in list) arr.put(org.json.JSONObject().put("name", t.name).put("mode", t.mode).put("dest", stopJson(t.dest))
-            .put("stops", org.json.JSONArray().also { a -> t.stops.forEach { a.put(stopJson(it)) } }).put("len", t.lengthM.toDouble()).put("ferry", t.avoidFerries))
+            .put("stops", org.json.JSONArray().also { a -> t.stops.forEach { a.put(stopJson(it)) } }).put("len", t.lengthM.toDouble()).put("ferry", t.avoidFerries)
+            .also { o -> t.start?.let { o.put("start", stopJson(it)) } })
         prefs.edit().putString("trips", arr.toString()).apply()
     }
 
@@ -1263,9 +1269,10 @@ class MainActivity : Activity() {
         val list = loadTrips()
         val b = AlertDialog.Builder(this).setTitle("Saved trips")
             .setPositiveButton("Save current trip") { _, _ -> saveCurrentTrip() }
+            .setNeutralButton("Plan a trip\u2026") { _, _ -> plan = PlanDraft(); showPlanner() }
             .setNegativeButton("Close", null)
         if (list.isEmpty()) {
-            b.setMessage("No saved trips yet. Plan a route (and any waypoints), then tap Save current trip.")
+            b.setMessage("No saved trips yet. Use Plan a trip (no game needed), or plan a route while driving and tap Save current trip.")
         } else {
             val rows = list.map { t ->
                 val km = t.lengthM * distScale / 1000f
@@ -1280,11 +1287,18 @@ class MainActivity : Activity() {
 
     private fun tripOptions(list: MutableList<SavedTrip>, i: Int) {
         val t = list.getOrNull(i) ?: return
+        val items = ArrayList<String>()
+        if (t.start != null) items.add("Drive this trip (to its start first)")
+        items.add(if (t.start != null) "Drive from here (skip its start)" else "Start this trip from here")
+        items.add("View / edit the plan"); items.add("Rename"); items.add("Delete")
         AlertDialog.Builder(this).setTitle(t.name)
-            .setItems(arrayOf("Start this trip from here", "Rename", "Delete")) { _, k ->
-                when (k) {
-                    0 -> startSavedTrip(t)
-                    1 -> renameTrip(list, i)
+            .setItems(items.toTypedArray()) { _, k ->
+                val what = items[k]
+                when {
+                    what.startsWith("Drive this trip") -> startSavedTrip(t, true)
+                    what.startsWith("Drive from here") || what.startsWith("Start this trip") -> startSavedTrip(t)
+                    what.startsWith("View") -> editSavedTrip(t)
+                    what == "Rename" -> renameTrip(list, i)
                     else -> { list.removeAt(i); storeTrips(list); toast("Deleted: ${t.name}") }
                 }
             }
@@ -1301,20 +1315,23 @@ class MainActivity : Activity() {
                 if (name.isEmpty() || name == t.name) return@setPositiveButton
                 list.removeAll { it.name == name } // an existing trip with that name is replaced
                 val at = list.indexOfFirst { it === t }.coerceAtLeast(0)
-                list[at] = SavedTrip(name, t.mode, t.dest, t.stops, t.lengthM, t.avoidFerries)
+                list[at] = SavedTrip(name, t.mode, t.dest, t.stops, t.lengthM, t.avoidFerries, t.start)
                 storeTrips(list)
                 toast("Renamed to: $name")
             }
             .setNegativeButton("Cancel", null).show()
     }
 
-    private fun startSavedTrip(t: SavedTrip) {
+    private fun startSavedTrip(t: SavedTrip, viaStart: Boolean = false) {
         if (map == null) { toast("Map not loaded yet"); return }
         if (truck?.connected != true) { toast("Start the game first - no truck position yet"); return }
         if (routing.get()) { toast("Still planning - try again in a moment"); return }
         RouteMode.values().getOrNull(t.mode)?.let { routeMode = it; updateModeButton() }
         avoidFerries = t.avoidFerries
         waypoints.clear(); waypoints.addAll(t.stops); resumeStops.clear()
+        // a planned trip begins at its own start: drive there first unless the truck is already close to it
+        val st = t.start
+        if (viaStart && st != null && hypot(st.x - motion.x, st.z - motion.z) > 1500f) waypoints.add(0, st)
         computeRoute(t.dest.x, t.dest.z, t.dest.name, announce = true, keepStops = true)
     }
 
@@ -1429,6 +1446,261 @@ class MainActivity : Activity() {
     }
 
     // ---------------------------------------------------------------------------- dialogs --
+
+
+    // ------------------------------------------------------------------------- trip planner --
+
+    /** Plan a trip without the game running: choose a start, stops and a destination, preview it, save it, drive it later. */
+    private class PlanDraft {
+        var start: Stop? = null
+        var dest: Stop? = null
+        val stops = ArrayList<Stop>()
+        var editName: String? = null
+        var lengthM = -1f // of the previewed route; -1 = not calculated for the current plan
+        var timeS = 0f
+    }
+
+    private var plan = PlanDraft()
+    private var planning = false
+    private lateinit var planBar: LinearLayout
+    private lateinit var planText: TextView
+
+    private fun haveTruckFix() = truck?.connected == true && (motion.x != 0f || motion.z != 0f)
+    private fun myPosition() = Stop(motion.x, motion.z, place.removePrefix("Near ").ifEmpty { "My position" })
+    private fun pt(s: Stop) = PlanPoint(s.x, s.z, s.name)
+
+    private fun buildPlanBar(root: FrameLayout) {
+        planText = TextView(this).apply { textSize = 15f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setTypeface(null, android.graphics.Typeface.BOLD) }
+        planBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.argb(235, 14, 18, 24)); setPadding(dp(12), dp(10), dp(12), dp(8)); visibility = View.GONE
+        }
+        planBar.addView(planText)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        fun b(label: String, fn: () -> Unit) = row.addView(button(label, fn), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(46)).apply { leftMargin = dp(3); rightMargin = dp(3) })
+        b("Edit plan") { exitPlanView(); showPlanner() }
+        b("Save trip") { savePlan() }
+        b("Drive this trip") { drivePlan() }
+        b("Done") { exitPlanView() }
+        planBar.addView(row)
+        root.addView(planBar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(100) })
+    }
+
+    private fun showPlanner() {
+        if (map == null || router == null) { toast("Map not loaded yet"); return }
+        val p = plan
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
+        val summary = if (p.lengthM >= 0f)
+            "${gameDist(p.lengthM)}  \u00b7  Real ${formatDuration(p.timeS / 60f)}  \u00b7  Sim ${formatDuration(p.timeS / 60f * TIME_SCALE)}"
+        else "Plan a trip without the game running: choose a start, add stops, choose the destination, then preview it on the map."
+        box.addView(TextView(this).apply { text = summary; textSize = 13f; setPadding(0, 0, 0, dp(8)) })
+        lateinit var dlg: AlertDialog
+        fun row(label: String, action: () -> Unit) {
+            box.addView(TextView(this).apply {
+                text = label; textSize = 16f; setPadding(dp(6), dp(12), dp(6), dp(12))
+                setOnClickListener { dlg.dismiss(); action() }
+            })
+        }
+        row("Start:  " + (p.start?.name ?: "(tap to choose, or leave empty to start from the truck)")) { startOptions() }
+        for (i in p.stops.indices) row("Stop ${i + 1}:  ${p.stops[i].name}") { planStopOptions(i) }
+        row("Destination:  " + (p.dest?.name ?: "(tap to choose)")) { destOptions() }
+        val inline = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
+        inline.addView(Button(this).apply { text = "Add stop"; setOnClickListener { dlg.dismiss(); pickPlace("Add a stop") { c -> plan.stops.add(c); plan.lengthM = -1f } } })
+        inline.addView(Button(this).apply { text = "Clear"; setOnClickListener { dlg.dismiss(); plan = PlanDraft(); showPlanner() } })
+        box.addView(inline)
+        dlg = AlertDialog.Builder(this).setTitle(p.editName?.let { "Plan trip: $it" } ?: "Plan a trip")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Preview on map") { _, _ -> previewPlan() }
+            .setNeutralButton("Save trip") { _, _ -> savePlan() }
+            .setNegativeButton("Close", null).create()
+        dlg.show()
+    }
+
+    /** City search; picking calls onPick(place) and returns to the planner. */
+    private fun pickPlace(title: String, onPick: (Stop) -> Unit) {
+        val m = map ?: return
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
+        val input = EditText(this).apply { hint = "City name"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS; setSingleLine() }
+        val list = ListView(this)
+        box.addView(input)
+        box.addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300)))
+        var shown: List<City> = m.cities
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList<String>())
+        list.adapter = adapter
+        fun refresh(q: String) {
+            val key = City.normalize(q.trim())
+            shown = if (key.isEmpty()) m.cities else m.cities.filter { it.key.contains(key) }.sortedBy { if (it.key.startsWith(key)) 0 else 1 }
+            adapter.clear(); adapter.addAll(shown.take(200).map { it.name }); adapter.notifyDataSetChanged()
+        }
+        refresh("")
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { refresh(s?.toString() ?: "") }
+            override fun afterTextChanged(s: Editable?) {}
+        })
+        val dlg = AlertDialog.Builder(this).setTitle(title).setView(box)
+            .setNegativeButton("Cancel") { _, _ -> showPlanner() }.create()
+        list.setOnItemClickListener { _, _, pos, _ ->
+            val c = shown.getOrNull(pos)
+            if (c != null) { dlg.dismiss(); onPick(Stop(c.x, c.z, c.name)); showPlanner() }
+        }
+        dlg.show()
+    }
+
+    private fun startOptions() {
+        val items = ArrayList<String>()
+        items.add("Search for a city\u2026")
+        if (haveTruckFix()) items.add("Use my current position")
+        if (plan.start != null) items.add("Clear the start")
+        AlertDialog.Builder(this).setTitle("Start of the trip")
+            .setItems(items.toTypedArray()) { _, i ->
+                when {
+                    items[i].startsWith("Search") -> pickPlace("Start of the trip") { c -> plan.start = c; plan.lengthM = -1f }
+                    items[i].startsWith("Use") -> { plan.start = myPosition(); plan.lengthM = -1f; showPlanner() }
+                    else -> { plan.start = null; plan.lengthM = -1f; showPlanner() }
+                }
+            }
+            .setNegativeButton("Cancel") { _, _ -> showPlanner() }.show()
+    }
+
+    private fun destOptions() {
+        val items = arrayListOf("Search for a city\u2026")
+        if (plan.dest != null) items.add("Clear the destination")
+        AlertDialog.Builder(this).setTitle("Destination")
+            .setItems(items.toTypedArray()) { _, i ->
+                if (i == 0) pickPlace("Destination") { c -> plan.dest = c; plan.lengthM = -1f }
+                else { plan.dest = null; plan.lengthM = -1f; showPlanner() }
+            }
+            .setNegativeButton("Cancel") { _, _ -> showPlanner() }.show()
+    }
+
+    private fun planStopOptions(i: Int) {
+        val w = plan.stops.getOrNull(i) ?: run { showPlanner(); return }
+        AlertDialog.Builder(this).setTitle(w.name)
+            .setItems(arrayOf("Replace it (search)\u2026", "Move earlier", "Move later", "Remove")) { _, k ->
+                when (k) {
+                    0 -> { pickPlace("Replace stop ${i + 1}") { c -> plan.stops[i] = c; plan.lengthM = -1f }; return@setItems }
+                    1 -> if (i > 0) { plan.stops.removeAt(i); plan.stops.add(i - 1, w) }
+                    2 -> if (i < plan.stops.size - 1) { plan.stops.removeAt(i); plan.stops.add(i + 1, w) }
+                    else -> plan.stops.removeAt(i)
+                }
+                plan.lengthM = -1f; showPlanner()
+            }
+            .setNegativeButton("Cancel") { _, _ -> showPlanner() }.show()
+    }
+
+    /** Calculates the plan on the background thread, stores the preview line and pins, then calls done(errorOrNull). */
+    private fun calcPlan(done: (String?) -> Unit) {
+        val start = plan.start ?: if (haveTruckFix()) myPosition() else null
+        val stops = plan.stops.map { pt(it) }
+        val dest = plan.dest
+        val r = router; val m = map
+        if (r == null || m == null) { done("Map not loaded yet"); return }
+        bg.execute {
+            val out = try { TripPlan.compute(r, m, start?.let { pt(it) }, stops, dest?.let { pt(it) }) }
+            catch (t: Throwable) { PlanOut(FloatArray(0), IntArray(0), 0f, 0f, "Routing failed: ${t.message}") }
+            ui.post {
+                if (out.error == null) {
+                    plan.lengthM = out.lengthM; plan.timeS = out.timeS
+                    mapView.planPts = out.pts; mapView.planEdgePt = out.starts
+                    val pins = ArrayList<MapView.Pin>()
+                    pins.add(MapView.Pin(start!!.x, start.z, "S", Color.rgb(30, 150, 80)))
+                    plan.stops.forEachIndexed { i, s -> pins.add(MapView.Pin(s.x, s.z, "${i + 1}", Color.rgb(25, 118, 210))) }
+                    pins.add(MapView.Pin(dest!!.x, dest.z, "D", Color.rgb(200, 60, 60)))
+                    mapView.pins = pins
+                }
+                done(out.error)
+            }
+        }
+    }
+
+    private fun previewPlan() {
+        toast("Calculating the route...")
+        calcPlan { err -> if (err != null) { toast(err); showPlanner() } else enterPlanView() }
+    }
+
+    private fun enterPlanView() {
+        val pts = mapView.planPts
+        var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE; var minZ = Float.MAX_VALUE; var maxZ = -Float.MAX_VALUE
+        var i = 0
+        while (i + 1 < pts.size) { minX = min(minX, pts[i]); maxX = max(maxX, pts[i]); minZ = min(minZ, pts[i + 1]); maxZ = max(maxZ, pts[i + 1]); i += 2 }
+        val d = resources.displayMetrics.density
+        val w = max(300f, mapView.width.toFloat()); val h = max(200f, mapView.height.toFloat())
+        val spanX = max(200f, maxX - minX); val spanZ = max(200f, maxZ - minZ)
+        val pxPerM = min((w - 120f * d) * 0.85f / spanX, h * 0.5f / spanZ)
+        val zoom = (pxPerM / (d * 0.55f)).coerceIn(0.004f, 4f)
+        planning = true
+        mapView.showPlan((minX + maxX) / 2 - 60f * d / pxPerM, (minZ + maxZ) / 2 + h * 0.08f / pxPerM, zoom)
+        recentreBtn.visibility = View.GONE
+        updatePlanBar()
+        planBar.visibility = View.VISIBLE
+    }
+
+    private fun updatePlanBar() {
+        val from = plan.start?.name ?: if (haveTruckFix()) myPosition().name else "?"
+        val stops = if (plan.stops.isNotEmpty()) "  \u00b7  ${plan.stops.size} stop${if (plan.stops.size > 1) "s" else ""}" else ""
+        planText.text = "$from \u2192 ${plan.dest?.name}$stops\n${gameDist(plan.lengthM)}  \u00b7  Real ${formatDuration(plan.timeS / 60f)}  \u00b7  Sim ${formatDuration(plan.timeS / 60f * TIME_SCALE)}"
+    }
+
+    private fun exitPlanView() {
+        if (!planning) return
+        planning = false
+        planBar.visibility = View.GONE
+        mapView.hidePlan()
+        recentreBtn.visibility = View.GONE
+    }
+
+    /** Long-press on the map while planning: use that spot as the start, a stop or the destination. */
+    private fun planPointMenu(x: Float, z: Float) {
+        AlertDialog.Builder(this).setTitle("This point on the map")
+            .setItems(arrayOf("Set as the start", "Add as a stop", "Set as the destination")) { _, i ->
+                val s = Stop(x, z, "Selected point")
+                when (i) { 0 -> plan.start = s; 1 -> plan.stops.add(s); else -> plan.dest = s }
+                plan.lengthM = -1f
+                previewPlan()
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun savePlan() {
+        if (plan.dest == null) { toast("Choose a destination first"); showPlanner(); return }
+        val ask = {
+            val def = plan.editName ?: ((plan.start?.name ?: "Trip") + " \u2192 " + plan.dest!!.name)
+            val input = EditText(this).apply { setText(def); setSingleLine(); selectAll() }
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0); addView(input) }
+            AlertDialog.Builder(this).setTitle("Save this trip as").setView(box)
+                .setPositiveButton("Save") { _, _ -> saveTripNow(input.text.toString().trim().ifEmpty { def }) }
+                .setNegativeButton("Cancel", null).show()
+            Unit
+        }
+        if (plan.lengthM >= 0f) ask() else calcPlan { err -> if (err != null) { toast(err); showPlanner() } else ask() }
+    }
+
+    private fun saveTripNow(name: String) {
+        val dest = plan.dest ?: return
+        val list = loadTrips()
+        val old = plan.editName
+        list.removeAll { it.name == name || (old != null && it.name == old) }
+        list.add(0, SavedTrip(name, routeMode.ordinal, dest, ArrayList(plan.stops), plan.lengthM, avoidFerries, plan.start))
+        storeTrips(list)
+        plan.editName = name
+        toast("Trip saved: $name")
+        if (planning) updatePlanBar()
+    }
+
+    private fun drivePlan() {
+        val dest = plan.dest ?: return
+        val trip = SavedTrip("", routeMode.ordinal, dest, ArrayList(plan.stops), plan.lengthM, avoidFerries, plan.start)
+        exitPlanView()
+        startSavedTrip(trip, true)
+    }
+
+    /** Opens a saved trip in the planner (to look at it on the map, change it and save it again). */
+    private fun editSavedTrip(t: SavedTrip) {
+        RouteMode.values().getOrNull(t.mode)?.let { routeMode = it; updateModeButton() }
+        avoidFerries = t.avoidFerries
+        plan = PlanDraft().apply { start = t.start; dest = t.dest; stops.addAll(t.stops); editName = t.name }
+        showPlanner()
+    }
 
     private fun showSearch(asWaypoint: Boolean = false) {
         val m = map

@@ -25,6 +25,8 @@ class MapView {
     this.poiLetters = { 1: 'F', 3: 'P', 2: 'S', 4: 'W', 5: 'D', 6: 'G', 7: 'R', 8: 'H', 9: 'B', 10: 'T' };
     this.bufs = [[], [], [], []];
     this.tilt = 0; this.tiltMax = 52 * Math.PI / 180; this.driving = false; this.speedKmh = 0; this.dragging = false; this.assets = null;
+    // plan mode: the map shows a planned trip (north up, any zoom, no truck) instead of following the truck
+    this.planMode = false; this.planPts = new Float32Array(0); this.planEdgePt = new Int32Array(0); this.pins = [];
     this.W = 0; this.H = 0;
     this.pointers = new Map();
     this.attach();
@@ -42,7 +44,15 @@ class MapView {
     this.dpr = dpr;
   }
 
-  zoomBy(f) { this.userZoom = Math.min(10, Math.max(0.35, this.userZoom * f)); }
+  minZoom() { return this.planMode ? 0.004 : 0.35; }
+  zoomBy(f) { this.userZoom = Math.min(10, Math.max(this.minZoom(), this.userZoom * f)); }
+
+  showPlan(cx, cz, zoom) {
+    this.planMode = true; this.free = true; this.freeBearing = 0; this.freeCx = cx; this.freeCz = cz; this.userZoom = zoom;
+  }
+  hidePlan() {
+    this.planMode = false; this.free = false; this.pins = []; this.planPts = new Float32Array(0); this.planEdgePt = new Int32Array(0); this.userZoom = 1;
+  }
 
   enterFree() {
     const s = this.pxPerM(), ahead = -(this.H / 2 - this.pivotY()) / s;
@@ -59,7 +69,7 @@ class MapView {
   }
 
   toWorld(sx, sy) {
-    if (!this.hasFix) return null;
+    if (!this.hasFix && !this.planMode) return null;
     const s = this.pxPerM(), px = this.free ? this.W / 2 : this.pivotX(), py = this.free ? this.H / 2 : this.pivotY();
     const fl = this.unwarp(sx, sy, px, py, this.ecam(this.H, py));
     if (!fl) return null;
@@ -90,12 +100,12 @@ class MapView {
       const dx = e.offsetX - p.x, dy = e.offsetY - p.y;
       p.x = e.offsetX; p.y = e.offsetY;
       if (this.pointers.size === 2) {
-        if (pinch0 > 0) this.userZoom = Math.min(10, Math.max(0.35, zoom0 * dist() / pinch0));
+        if (pinch0 > 0) this.userZoom = Math.min(10, Math.max(this.minZoom(), zoom0 * dist() / pinch0));
         return;
       }
       if (!moved && Math.hypot(e.offsetX - startX, e.offsetY - startY) < 8) return;
       moved = true; clearTimeout(lp);
-      if (!this.hasFix || !this.map) return;
+      if ((!this.hasFix && !this.planMode) || !this.map) return;
       if (!this.free) this.enterFree();
       const s = this.pxPerM(), b = this.freeBearing, u = -dx / s, v = dy / s;
       this.freeCx += u * Math.cos(b) + v * Math.sin(b);
@@ -108,7 +118,7 @@ class MapView {
         clearTimeout(lp);
         if (had && !moved) {
           const now = Date.now();
-          if (now - lastTap < 320) { this.userZoom = 1; lastTap = 0; } else lastTap = now;
+          if (!this.planMode && now - lastTap < 320) { this.userZoom = 1; lastTap = 0; } else lastTap = now;
         }
       }
     };
@@ -147,14 +157,14 @@ class MapView {
     // tilt: eases in above 15 km/h while following the truck, back to flat when slow or looking around
     const now = performance.now(), dt = Math.min(0.1, Math.max(0, (now - (this.lastT || now)) / 1000)); this.lastT = now;
     if (this.speedKmh > 15) this.driving = true; else if (this.speedKmh < 12) this.driving = false;
-    const target = this.driving && !this.free && this.hasFix && m && !this.dragging ? this.tiltMax : 0;
+    const target = this.driving && !this.free && this.hasFix && m && !this.dragging && !this.planMode ? this.tiltMax : 0;
     this.tilt += Math.max(-dt * 1.6, Math.min(dt * 1.6, target - this.tilt));
     const tilted = this.tilt >= 0.001;
     const st = MAP_STYLE;
     c.fillStyle = st.bg; c.fillRect(0, 0, W, H);
     c.textAlign = 'center'; c.font = '16px sans-serif'; c.fillStyle = 'rgba(220,226,236,0.86)';
     if (!m) { c.fillText('Loading the map from your PC…', W / 2, H / 2); return; }
-    if (!this.hasFix) { c.fillText('Waiting for the game…', W / 2, H / 2); return; }
+    if (!this.hasFix && !this.planMode) { c.fillText('Waiting for the game…', W / 2, H / 2); return; }
     const s = this.pxPerM(), isFree = this.free, vb = this.viewBearing;
     const px = isFree ? W / 2 : this.pivotX(), py = isFree ? H / 2 : this.pivotY();
     const cs = Math.cos(vb), sn = Math.sin(vb);
@@ -167,7 +177,8 @@ class MapView {
     const fs = (sc) => (tilted ? Math.min(1.1, Math.max(0.5, Math.pow(sc, 0.6))) : 1);
     const showLocal = zoomFactor > 0.3, showJunction = zoomFactor > 0.45;
     for (const b of this.bufs) b.length = 0;
-    m.queryEdges(cx, cz, radius, (e) => {
+    const drawRoads = !(this.planMode && zoomFactor < 0.06);   // zoomed far out while planning: just the route and the towns
+    if (drawRoads) m.queryEdges(cx, cz, radius, (e) => {
       const cls = Math.min(3, m.eCls[e]);
       if ((cls === 0 && !showLocal) || (cls === 3 && !showJunction)) return;
       if (m.ePtStart[e + 1] - m.ePtStart[e] < 2) return;
@@ -222,14 +233,15 @@ class MapView {
     for (const cls of [3, 0, 1, 2]) paths[cls].forEach((p, bd) => { if (p) { c.strokeStyle = this.colors[cls]; c.lineWidth = wid(cls, bd); c.stroke(p); } });
 
     // route
-    if (this.routePts.length && this.routeEdgePt.length) {
-      const total = this.routePts.length / 2;
-      const first = this.routeEdgePt[Math.min(Math.max(0, this.routeIdx - 1), this.routeEdgePt.length - 1)];
-      const last = Math.min(total, first + 6000);
+    const rp0 = this.planMode ? this.planPts : this.routePts, re0 = this.planMode ? this.planEdgePt : this.routeEdgePt;
+    if (rp0.length && re0.length) {
+      const total = rp0.length / 2;
+      const first = this.planMode ? 0 : re0[Math.min(Math.max(0, this.routeIdx - 1), re0.length - 1)];
+      const last = this.planMode ? total : Math.min(total, first + 6000);
       const w = Math.max(10 * s, 6), rp = [];
       let cur = -1, lq = null;
       for (let p = first; p < last; p++) {
-        const q = proj(this.routePts[p * 2], this.routePts[p * 2 + 1]);
+        const q = proj(rp0[p * 2], rp0[p * 2 + 1]);
         if (lq) {
           const sc = (lq[2] + q[2]) / 2;
           if (sc < 0.28) cur = -1;
@@ -259,7 +271,7 @@ class MapView {
 
     // big area (city) names
     if (zoomFactor < 1.8) {
-      const size = Math.min(34, Math.max(20, 26 * Math.pow(zoomFactor, 0.35)));
+      const size = Math.min(34, Math.max(this.planMode ? 11 : 20, 26 * Math.pow(zoomFactor, 0.35)));
       c.textAlign = 'center'; c.textBaseline = 'middle';
       for (const ci of m.cities) {
         const dx = ci.x - cx, dz = ci.z - cz;
@@ -341,8 +353,18 @@ class MapView {
         });
       }
     }
+    // planned trip: start, stops and destination pins
+    if (this.planMode) {
+      for (const pin of this.pins) {
+        const q = proj(pin.x, pin.z);
+        if (q[0] < -60 || q[0] > W + 60 || q[1] < -60 || q[1] > H + 60) continue;
+        c.fillStyle = pin.color; c.beginPath(); c.arc(q[0], q[1], 20, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = '#fff'; c.lineWidth = 3; c.stroke();
+        c.fillStyle = '#fff'; c.font = 'bold 22px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(pin.label, q[0], q[1] + 1); c.textBaseline = 'alphabetic';
+      }
+    }
     // waypoints
-    this.stops.forEach((sp, i) => {
+    (this.planMode ? [] : this.stops).forEach((sp, i) => {
       const q = proj(sp.x, sp.z);
       if (q[0] < -60 || q[0] > W + 60 || q[1] < -60 || q[1] > H + 60) return;
       at(q[0], q[1], fs(q[2]), () => {
@@ -352,7 +374,7 @@ class MapView {
       });
     });
     // next maneuver marker
-    const nm = this.nextManeuver;
+    const nm = this.planMode ? null : this.nextManeuver;
     if (nm) {
       const q = proj(nm.x, nm.z);
       if (q[0] > -80 && q[0] < W + 80 && q[1] > -80 && q[1] < H + 80) {
@@ -374,6 +396,7 @@ class MapView {
       c.fillStyle = g; c.fillRect(0, 0, W, fadeTo);
     }
     // truck (flat at the pivot)
+    if (this.planMode) return;
     const t = 15;
     c.save(); c.translate(px, py); c.rotate(this.bearing - vb);
     c.beginPath(); c.moveTo(0, -t * 1.2); c.lineTo(t * 0.85, t * 0.85); c.lineTo(0, t * 0.4); c.lineTo(-t * 0.85, t * 0.85); c.closePath();
