@@ -169,11 +169,17 @@ async function loadMap() {
     rt.avoidFerries = avoidFerries;
     map = m; router = rt; nav = new Navigator(m, rt); nav.distScale = distScale;
     mapView.map = m;
+    loadAssets();
     setBannerMessage(null);
     toast('Map loaded: ' + m.cities.length + ' cities, ' + fmt(m.edgeCount) + ' road segments' + (m.laneN.length ? ', with lane data' : ' - no lane data: rebuild the map with the updated companion'));
   } catch (e) {
     setBannerMessage('Could not load the map: ' + (e.message || e));
   }
+}
+
+// Logos and flags are optional: older PCs / companions do not have them.
+async function loadAssets() {
+  try { mapView.assets = await MapAssets.load('/assets.bin'); } catch (e) { /* names only */ }
 }
 
 // ------------------------------------------------------------------------------ banner --
@@ -242,6 +248,7 @@ function onTruck(s) {
   const now = performance.now();
   motion.update(s, now);
   mapView.hasFix = s.connected && (s.x !== 0 || s.z !== 0);
+  mapView.speedKmh = s.speedKmh;
   statusMsg = !s.connected ? 'Telemetry connected - waiting for the game' : s.paused ? 'Game paused' : place;
   $('status').textContent = statusMsg;
   $('speed').textContent = Math.round(Math.max(0, s.speedKmh));

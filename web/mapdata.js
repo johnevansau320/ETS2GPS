@@ -2,10 +2,10 @@
 /* Road network from companion/build_map.py (etsmap.bin): loader, spatial grid and lookups.
  * World units are metres in the game's coordinate system (x east, z south). */
 
-const POI = { FUEL: 1, SERVICE: 2, PARKING: 3, WEIGH: 4, DEALER: 5, GARAGE: 6, RECRUIT: 7, HOTEL: 8 };
+const POI = { FUEL: 1, SERVICE: 2, PARKING: 3, WEIGH: 4, DEALER: 5, GARAGE: 6, RECRUIT: 7, HOTEL: 8, FERRY: 9, TRAIN: 10 };
 const POI_LABEL = {
   1: 'Fuel station', 2: 'Service centre', 3: 'Rest area / parking', 4: 'Weigh station',
-  5: 'Truck dealer', 6: 'Garage', 7: 'Recruitment agency', 8: 'Hotel',
+  5: 'Truck dealer', 6: 'Garage', 7: 'Recruitment agency', 8: 'Hotel', 9: 'Ferry terminal', 10: 'Car train terminal',
 };
 
 function normalizeName(s) {
@@ -20,7 +20,7 @@ class MapData {
     const magic = String.fromCharCode(u8[0], u8[1], u8[2], u8[3]);
     if (magic !== 'ETSM') throw new Error('not an ETS2 GPS map file');
     const ver = dv.getUint16(4, true);
-    if (ver < 2 || ver > 8) throw new Error('unsupported map version ' + ver + ' (rebuild the map or update the app)');
+    if (ver < 2 || ver > 9) throw new Error('unsupported map version ' + ver + ' (rebuild the map or update the app)');
     const m = new MapData();
     m.ver = ver;
     m.minX = dv.getFloat32(8, true); m.minZ = dv.getFloat32(12, true);
@@ -102,8 +102,45 @@ class MapData {
         o += 7;
       }
     }
+    m.companyNames = new Map(); m.roadLabels = []; m.areas = []; m.borders = []; m.cityCountry = new Map();
+    if (ver >= 9 && o + 4 <= raw.byteLength) {
+      const nn2 = dv.getUint32(o, true); o += 4;
+      for (let i = 0; i < nn2; i++) { const id = str(); m.companyNames.set(id.toLowerCase(), str()); }
+      const ln2 = dv.getUint32(o, true); o += 4;
+      for (let i = 0; i < ln2; i++) { const text = str(); m.roadLabels.push({ text, x: dv.getFloat32(o, true), z: dv.getFloat32(o + 4, true) }); o += 8; }
+      const an = dv.getUint32(o, true); o += 4;
+      for (let i = 0; i < an; i++) {
+        const color = u8[o], np = dv.getUint16(o + 1, true); o += 3;
+        const xs = new Float32Array(np), zs = new Float32Array(np);
+        let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+        for (let k = 0; k < np; k++) {
+          const x = dv.getFloat32(o, true), z = dv.getFloat32(o + 4, true); o += 8;
+          xs[k] = x; zs[k] = z;
+          if (x < x0) x0 = x; if (x > x1) x1 = x; if (z < z0) z0 = z; if (z > z1) z1 = z;
+        }
+        m.areas.push({ color, xs, zs, x0, x1, z0, z1 });
+      }
+      if (o + 4 <= raw.byteLength) {
+        const bn = dv.getUint32(o, true); o += 4;
+        for (let i = 0; i < bn; i++) { const kind = u8[o]; o++; const cc = str(); m.borders.push({ kind, cc, x: dv.getFloat32(o, true), z: dv.getFloat32(o + 4, true) }); o += 8; }
+        if (o + 4 <= raw.byteLength) {
+          const cn2 = dv.getUint32(o, true); o += 4;
+          for (let i = 0; i < cn2; i++) { const id = str(); m.cityCountry.set(id.toLowerCase(), str()); }
+        }
+      }
+    }
     m.buildGrid();
     return m;
+  }
+
+  /** ISO alpha-2 of the country around a point: that of the nearest city. */
+  countryAt(x, z) {
+    let best = null, bd = Infinity;
+    for (const c of this.cities) {
+      const dx = c.x - x, dz = c.z - z, dd = dx * dx + dz * dz;
+      if (dd < bd && this.cityCountry.has(c.id.toLowerCase())) { bd = dd; best = c; }
+    }
+    return best ? this.cityCountry.get(best.id.toLowerCase()) : null;
   }
 
   buildGrid() {

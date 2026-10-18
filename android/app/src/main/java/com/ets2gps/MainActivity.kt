@@ -426,6 +426,30 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------------------- map file --
 
     private fun mapFile() = File(filesDir, "etsmap.bin")
+    private fun assetsFile() = File(filesDir, "etsassets.bin")
+
+    /** Logos and flags are optional (older PCs / companions do not have them). */
+    private fun loadAssetsAsync() {
+        val f = assetsFile()
+        if (!f.exists()) return
+        bg.execute { val a = MapAssets.load(f); if (a != null) ui.post { mapView.assets = a } }
+    }
+
+    /** Best effort: the Windows app serves the logos and flags next to the map; other servers just do not have them. */
+    private fun downloadAssets(h: String) {
+        val tmp = File(filesDir, "etsassets.bin.tmp")
+        try {
+            val c = URL("http://$h:31378/assets.bin").openConnection() as HttpURLConnection
+            c.connectTimeout = 4000
+            c.readTimeout = 20000
+            if (c.responseCode != 200) { c.disconnect(); return }
+            c.inputStream.use { input -> tmp.outputStream().use { out -> input.copyTo(out) } }
+            c.disconnect()
+            if (!tmp.renameTo(assetsFile())) { assetsFile().delete(); tmp.renameTo(assetsFile()) }
+        } catch (_: Throwable) {
+            tmp.delete()
+        }
+    }
 
     private fun loadMapAsync() {
         val f = mapFile()
@@ -447,6 +471,7 @@ class MainActivity : Activity() {
                     map = m; router = r; nav = n
                     n.distScale = distScale
                     mapView.map = m
+                    loadAssetsAsync()
                     banner.setMessage(null)
                     toast("Map loaded: ${m.cities.size} cities, ${m.edgeCount} road segments" + (if (m.laneN.isEmpty()) " - no lane data: update the companion and download the map again" else ", with lane data"))
                 }
@@ -493,6 +518,7 @@ class MainActivity : Activity() {
                     mapFile().delete()
                     tmp.renameTo(mapFile())
                 }
+                downloadAssets(h)
                 ui.post { downloading = false; loadMapAsync() }
             } catch (t: Throwable) {
                 tmp.delete()
@@ -517,6 +543,7 @@ class MainActivity : Activity() {
         val now = SystemClock.elapsedRealtime()
         motion.update(s, now)
         mapView.hasFix = s.connected && (s.x != 0f || s.z != 0f)
+        mapView.speedKmh = s.speedKmh
         statusText.text = if (!s.connected) "Telemetry connected - waiting for the game" else if (s.paused) "Game paused" else place
         speedText.text = Math.round(s.speedKmh.coerceAtLeast(0f)).toString()
         if (s.speedLimitKmh > 0) {

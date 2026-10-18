@@ -15,15 +15,28 @@ class Poi(val type: Int, val x: Float, val z: Float) {
     companion object {
         const val FUEL = 1; const val SERVICE = 2; const val PARKING = 3; const val WEIGH = 4
         const val DEALER = 5; const val GARAGE = 6; const val RECRUIT = 7; const val HOTEL = 8
+        const val FERRY = 9; const val TRAIN = 10
         fun label(t: Int) = when (t) {
             FUEL -> "Fuel station"; SERVICE -> "Service centre"; PARKING -> "Rest area / parking"
             WEIGH -> "Weigh station"; DEALER -> "Truck dealer"; GARAGE -> "Garage"; RECRUIT -> "Recruitment agency"
+            FERRY -> "Ferry terminal"; TRAIN -> "Car train terminal"
             else -> "Hotel"
         }
     }
 }
 
 class Company(val id: String, val cityId: String, val x: Float, val z: Float)
+
+/** A border crossing: kind 0 = checkpoint symbol, 1 = the flag of the country being entered (cc = ISO alpha-2). */
+class BorderPoint(val kind: Int, val cc: String, val x: Float, val z: Float)
+
+/** A road-number shield ("E45", "SH 2") placed on the map. */
+class RoadLabel(val text: String, val x: Float, val z: Float)
+
+/** A lot / yard / green patch outline: color 0 = road surface, 1 = light, 2 = dark, 3 = green. */
+class MapArea(val color: Int, val xs: FloatArray, val zs: FloatArray) {
+    val minX = xs.min(); val maxX = xs.max(); val minZ = zs.min(); val maxZ = zs.max()
+}
 
 class City(val id: String, val name: String, val x: Float, val z: Float) {
     /** lower-case, accent-free name for searching */
@@ -64,6 +77,12 @@ class MapData(
     /** Per junction edge: lanes at the entry (0 = unknown) and the bitmask of lanes (from the left) that take this path. */
     val laneN: ByteArray = ByteArray(0),
     val laneMask: ShortArray = ShortArray(0),
+    /** Names shown for companies (id lower-case -> shown name), road-number shields and map areas (file version 9). */
+    val companyNames: Map<String, String> = emptyMap(),
+    val roadLabels: List<RoadLabel> = emptyList(),
+    val areas: List<MapArea> = emptyList(),
+    val borders: List<BorderPoint> = emptyList(),
+    val cityCountry: Map<String, String> = emptyMap(),
 ) {
     val nodeCount get() = nodeX.size
     val edgeCount get() = eFrom.size
@@ -135,6 +154,16 @@ class MapData(
         return false
     }
 
+    /** ISO alpha-2 of the country around a point: that of the nearest city. */
+    fun countryAt(x: Float, z: Float): String? {
+        var best: City? = null; var bd = Float.MAX_VALUE
+        for (c in cities) {
+            val dx = c.x - x; val dz = c.z - z; val dd = dx * dx + dz * dz
+            if (dd < bd && cityCountry.containsKey(c.id.lowercase())) { bd = dd; best = c }
+        }
+        return best?.let { cityCountry[it.id.lowercase()] }
+    }
+
     fun lanesAtEntry(e: Int): Int = if (e < laneN.size) laneN[e].toInt() else 0
     fun laneMaskOf(e: Int): Int = if (e < laneMask.size) laneMask[e].toInt() and 0xFFFF else 0
 
@@ -174,7 +203,7 @@ class MapData(
             b.get(magic)
             require(String(magic) == "ETSM") { "not an ETS2 GPS map file" }
             val ver = b.short.toInt()
-            require(ver in 2..8) { "unsupported map version $ver (update the app or rebuild the map)" }
+            require(ver in 2..9) { "unsupported map version $ver (update the app or rebuild the map)" }
             b.short
             val minX = b.float; val minZ = b.float; val maxX = b.float; val maxZ = b.float
 
@@ -267,9 +296,37 @@ class MapData(
                     if (e in 0 until en) { laneN[e] = n; laneMask[e] = m }
                 }
             }
+            val companyNames = HashMap<String, String>()
+            val roadLabels = ArrayList<RoadLabel>()
+            val areas = ArrayList<MapArea>()
+            val borders = ArrayList<BorderPoint>()
+            val cityCountry = HashMap<String, String>()
+            if (ver >= 9 && b.remaining() >= 4) {
+                val nn2 = b.int
+                for (i in 0 until nn2) { val id = readStr(b); companyNames[id.lowercase()] = readStr(b) }
+                val ln2 = b.int
+                for (i in 0 until ln2) { val text = readStr(b); roadLabels.add(RoadLabel(text, b.float, b.float)) }
+                val an = b.int
+                for (i in 0 until an) {
+                    val color = b.get().toInt() and 0xFF
+                    val np = b.short.toInt() and 0xFFFF
+                    val xs = FloatArray(np); val zs = FloatArray(np)
+                    for (k in 0 until np) { xs[k] = b.float; zs[k] = b.float }
+                    if (np >= 3) areas.add(MapArea(color, xs, zs))
+                }
+                if (b.remaining() >= 4) {
+                    val bn = b.int
+                    for (i in 0 until bn) { val kind = b.get().toInt() and 0xFF; val cc = readStr(b); borders.add(BorderPoint(kind, cc, b.float, b.float)) }
+                    if (b.remaining() >= 4) {
+                        val cn2 = b.int
+                        for (i in 0 until cn2) { val id = readStr(b); cityCountry[id.lowercase()] = readStr(b) }
+                    }
+                }
+            }
             return MapData(
                 minX, minZ, maxX, maxZ, nodeX, nodeZ, eFrom, eTo, eFlags, eCls, eGrade, eSpeed, eWidth, eJid,
                 ePtStart, ptX, ptZ, eLen, junctionNodes, roundabouts, cities.sortedBy { it.key }, companies, pois, laneN, laneMask,
+                companyNames, roadLabels, areas, borders, cityCountry,
             )
         }
 

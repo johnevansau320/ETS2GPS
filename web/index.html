@@ -30,7 +30,7 @@ html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font
 #lanes { left:50%; transform:translateX(-50%); top:calc(max(6px, env(safe-area-inset-top)) + 100px); display:none; }
 #menu { z-index:5; left:10px; top:calc(max(6px, env(safe-area-inset-top)) + 106px); bottom:84px; display:flex; flex-direction:column; justify-content:center; gap:6px; overflow-y:auto; scrollbar-width:none; padding-bottom:2px; }
 #menu::-webkit-scrollbar { display:none; }
-.btn { width:88px; height:46px; flex:none; background:var(--btn); color:#fff; border:0; border-radius:4px; font-size:15px; font-family:inherit; }
+.btn { width:104px; height:50px; flex:none; background:var(--btn); color:#fff; border:0; border-radius:4px; font-size:18px; font-family:inherit; }
 .btn:active { background:var(--btn2); }
 .btn.blue { background:var(--accent); }
 #zoom { right:24px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; gap:8px; }
@@ -118,6 +118,7 @@ html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font
 <script src="navigator.js"></script>
 <script src="telemetry.js"></script>
 <script src="gfx.js"></script>
+<script src="assets.js"></script>
 <script src="mapview.js"></script>
 <script src="app.js"></script>
 </body>

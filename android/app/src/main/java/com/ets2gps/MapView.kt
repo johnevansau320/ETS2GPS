@@ -5,10 +5,12 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
@@ -51,9 +53,19 @@ class MapView(ctx: Context) : View(ctx) {
     private val bufs = Array(4) { FloatArray(8192) }
     private val counts = IntArray(4)
     private val widthsM = floatArrayOf(7f, 11f, 18f, 8f)
+    // road atlas look: steel-blue roads with a darker outline on a slate background
     private val colors = intArrayOf(
-        Color.rgb(70, 82, 98), Color.rgb(104, 118, 138), Color.rgb(222, 178, 84), Color.rgb(82, 94, 112),
+        Color.rgb(70, 96, 128), Color.rgb(84, 114, 150), Color.rgb(236, 190, 90), Color.rgb(64, 88, 118),
     )
+    private val casings = intArrayOf(Color.rgb(26, 32, 44), Color.rgb(26, 32, 44), Color.rgb(120, 84, 24), Color.rgb(26, 32, 44))
+    private val areaColors = intArrayOf(Color.rgb(52, 64, 84), Color.rgb(226, 190, 136), Color.rgb(212, 160, 92), Color.rgb(112, 160, 104))
+    private val areaPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val areaPath = Path()
+    private val shieldPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val shieldEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.WHITE }
+    private val shieldText = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+    private val pillText = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(30, 36, 48); textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+    private val rect = RectF()
     private val roadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND
     }
@@ -89,16 +101,17 @@ class MapView(ctx: Context) : View(ctx) {
         Poi.FUEL to Color.rgb(230, 120, 20), Poi.PARKING to Color.rgb(40, 110, 220), Poi.SERVICE to Color.rgb(120, 130, 145),
         Poi.WEIGH to Color.rgb(150, 90, 190), Poi.DEALER to Color.rgb(190, 60, 60), Poi.GARAGE to Color.rgb(60, 140, 120),
         Poi.RECRUIT to Color.rgb(160, 140, 40), Poi.HOTEL to Color.rgb(90, 90, 170),
+        Poi.FERRY to Color.rgb(0, 120, 170), Poi.TRAIN to Color.rgb(110, 110, 124),
     )
     private val poiLetters = mapOf(
         Poi.FUEL to "F", Poi.PARKING to "P", Poi.SERVICE to "S", Poi.WEIGH to "W",
-        Poi.DEALER to "D", Poi.GARAGE to "G", Poi.RECRUIT to "R", Poi.HOTEL to "H",
+        Poi.DEALER to "D", Poi.GARAGE to "G", Poi.RECRUIT to "R", Poi.HOTEL to "H", Poi.FERRY to "B", Poi.TRAIN to "T",
     )
-    var showPoiTypes: Set<Int> = setOf(Poi.FUEL, Poi.PARKING, Poi.SERVICE, Poi.WEIGH)
+    var showPoiTypes: Set<Int> = setOf(Poi.FUEL, Poi.PARKING, Poi.SERVICE, Poi.WEIGH, Poi.GARAGE, Poi.DEALER, Poi.FERRY, Poi.TRAIN)
 
     private val scaleDetector = ScaleGestureDetector(ctx, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(det: ScaleGestureDetector): Boolean {
-            userZoom = (userZoom * det.scaleFactor).coerceIn(0.35f, 4f)
+            userZoom = (userZoom * det.scaleFactor).coerceIn(0.35f, 10f)
             invalidate()
             return true
         }
@@ -149,7 +162,7 @@ class MapView(ctx: Context) : View(ctx) {
     }
 
     fun zoomBy(f: Float) {
-        userZoom = (userZoom * f).coerceIn(0.35f, 4f)
+        userZoom = (userZoom * f).coerceIn(0.35f, 10f)
         invalidate()
     }
 
@@ -174,9 +187,20 @@ class MapView(ctx: Context) : View(ctx) {
         val s = pxPerM()
         val px = if (free) width / 2f else pivotX()
         val py = if (free) height / 2f else pivotY()
+        var fxs = sx; var fys = sy
+        if (tilt >= 0.001f) {
+            val e = ecam(height.toFloat(), py)
+            val sT = sin(tilt); val cT = cos(tilt)
+            val yp = py - sy
+            val den = e * cT - yp * sT
+            if (den <= 1e-6f) return null
+            val y0 = yp * e / den
+            val sc = e / (e + y0 * sT)
+            fxs = px + (sx - px) / sc; fys = py - y0
+        }
         val b = viewBearing
-        val u = (sx - px) / s
-        val v = -(sy - py) / s
+        val u = (fxs - px) / s
+        val v = -(fys - py) / s
         val fx = sin(b); val fz = -cos(b)
         val rx = cos(b); val rz = sin(b)
         val cx = if (free) freeCx else truckX
@@ -188,11 +212,83 @@ class MapView(ctx: Context) : View(ctx) {
         if (counts[c] + need > bufs[c].size) bufs[c] = bufs[c].copyOf(max(bufs[c].size * 2, counts[c] + need))
     }
 
+    // ------------------------------------------------------------------------ 3D tilt --
+
+    private val tiltMax = (52.0 * Math.PI / 180.0).toFloat()
+    private var tilt = 0f
+    private var driving = false
+    private var lastTick = 0L
+    var speedKmh = 0f
+    var assets: MapAssets? = null
+
+    private fun ecam(h: Float, py: Float) = (py + 0.12f * h) * kotlin.math.tan(tiltMax)
+
+    // per-frame projection state, and the result of the last proj() call
+    private var vpx = 0f; private var vpy = 0f; private var vcs = 1f; private var vsn = 0f
+    private var vcx = 0f; private var vcz = 0f; private var vs = 1f; private var vE = 1f
+    private var qx = 0f; private var qy = 0f; private var qs = 1f
+
+    private fun proj(wx: Float, wz: Float) {
+        val a = wx - vcx; val b = wz - vcz
+        val fxp = vpx + (a * vcs + b * vsn) * vs
+        val fyp = vpy - (a * vsn - b * vcs) * vs
+        if (tilt < 0.001f) { qx = fxp; qy = fyp; qs = 1f; return }
+        val x0 = fxp - vpx
+        var y0 = vpy - fyp
+        val sT = sin(tilt); val cT = cos(tilt)
+        val lim = -vE / sT * 0.8f
+        if (y0 < lim) y0 = lim
+        val sc = vE / (vE + y0 * sT)
+        qx = vpx + x0 * sc; qy = vpy - y0 * cT * sc; qs = sc
+    }
+
+    private val bandFactor = floatArrayOf(1f, 0.72f, 0.55f, 0.42f, 0.3f)
+    private fun band(sc: Float) = if (sc >= 0.8f) 0 else if (sc >= 0.62f) 1 else if (sc >= 0.48f) 2 else if (sc >= 0.36f) 3 else 4
+    private fun fscale(sc: Float) = if (tilt < 0.001f) 1f else Math.pow(sc.toDouble(), 0.6).toFloat().coerceIn(0.5f, 1.1f)
+
+    private inline fun scaled(x: Float, y: Float, f: Float, draw: () -> Unit) {
+        if (abs(f - 1f) < 0.02f) { draw(); return }
+        val sv = canvasRef!!.save()
+        canvasRef!!.scale(f, f, x, y)
+        draw()
+        canvasRef!!.restoreToCount(sv)
+    }
+    private var canvasRef: Canvas? = null
+
+    private val cityShadow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 10, 12, 20); textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+    private val cityText = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(225, 236, 224, 228); textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+    private val borderRed = Color.rgb(200, 40, 40)
+    private val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private val bandBufs = Array(20) { FloatArray(2048) }
+    private val bandCounts = IntArray(20)
+    private val routePaths = Array(5) { Path() }
+    private val routeUsed = BooleanArray(5)
+
+    private fun addSeg(k: Int, x0: Float, y0: Float, x1: Float, y1: Float) {
+        var buf = bandBufs[k]
+        val n = bandCounts[k]
+        if (n + 4 > buf.size) { buf = buf.copyOf(buf.size * 2); bandBufs[k] = buf }
+        buf[n] = x0; buf[n + 1] = y0; buf[n + 2] = x1; buf[n + 3] = y1
+        bandCounts[k] = n + 4
+    }
+
     // ------------------------------------------------------------------------ drawing --
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(Color.rgb(16, 21, 28))
         val m = map
+        canvasRef = canvas
+        // tilt: eases in above 15 km/h while following the truck, back to flat when slow or looking around
+        val nowT = android.os.SystemClock.uptimeMillis()
+        val dtT = min(0.1f, max(0f, (nowT - lastTick) / 1000f)); lastTick = nowT
+        if (speedKmh > 15f) driving = true else if (speedKmh < 12f) driving = false
+        val target = if (driving && !free && hasFix && m != null) tiltMax else 0f
+        if (abs(tilt - target) > 0.0005f) {
+            tilt += (target - tilt).coerceIn(-dtT * 1.6f, dtT * 1.6f)
+            postInvalidateOnAnimation()
+        }
+        val tilted = tilt >= 0.001f
+        canvas.drawColor(Color.rgb(34, 40, 54))
         if (m == null) {
             canvas.drawText("No map loaded - open settings to download it from your PC", width / 2f, height / 2f, msg)
             return
@@ -206,131 +302,263 @@ class MapView(ctx: Context) : View(ctx) {
         val vb = viewBearing
         val px = if (isFree) width / 2f else pivotX()
         val py = if (isFree) height / 2f else pivotY()
-        val cs = cos(vb); val sn = sin(vb)
-        val fx = sn; val fz = -cs
-        val rx = cs; val rz = sn
         val cx = if (isFree) freeCx else truckX
         val cz = if (isFree) freeCz else truckZ
-
-        val radius = hypot(max(px, width - px), max(py, height - py)) / s + 20f
-        counts.fill(0)
+        vpx = px; vpy = py; vcs = cos(vb); vsn = sin(vb); vcx = cx; vcz = cz; vs = s
+        val hh = height.toFloat()
+        vE = ecam(hh, py)
+        val yMax = 3.2f * hh
+        var radius = hypot(max(px, width - px), max(py, height - py)) / s + 20f
+        if (tilted) radius = max(radius, yMax / s * 1.05f + 20f)
         val zoomFactor = s / (d * 0.55f)
         val showLocal = zoomFactor > 0.3f
         val showJunction = zoomFactor > 0.45f
+        bandCounts.fill(0)
         m.queryEdges(cx, cz, radius) { e ->
             val cls = m.eCls[e].toInt().coerceIn(0, 3)
             if ((cls == 0 && !showLocal) || (cls == 3 && !showJunction)) return@queryEdges
             val a = m.ePtStart[e]
-            val b = m.ePtStart[e + 1]
+            val b = min(m.ePtStart[e + 1], a + 255)
             if (b - a < 2) return@queryEdges
-            grow(cls, (b - a) * 4)
-            val buf = bufs[cls]
-            var n = counts[cls]
-            var lx = 0f; var ly = 0f
+            var lx = 0f; var ly = 0f; var ls = 1f
             for (p in a until b) {
-                val wx = m.ptX[p] - cx; val wz = m.ptZ[p] - cz
-                val sx = px + (wx * rx + wz * rz) * s
-                val sy = py - (wx * fx + wz * fz) * s
+                proj(m.ptX[p], m.ptZ[p])
                 if (p > a) {
-                    buf[n++] = lx; buf[n++] = ly; buf[n++] = sx; buf[n++] = sy
+                    val sc = (ls + qs) / 2f
+                    if (!tilted) addSeg(cls * 5, lx, ly, qx, qy)
+                    else if (sc >= 0.28f) addSeg(cls * 5 + band(sc), lx, ly, qx, qy)
                 }
-                lx = sx; ly = sy
+                lx = qx; ly = qy; ls = qs
             }
-            counts[cls] = n
         }
-        for (c in intArrayOf(3, 0, 1, 2)) {
-            if (counts[c] == 0) continue
+
+        // lots, yards and green patches under the roads (one path per colour class)
+        if (zoomFactor > 0.4f) {
+            for (col in 0..3) {
+                areaPath.reset()
+                var any = false
+                for (a in m.areas) {
+                    if (a.color != col || a.maxX < cx - radius || a.minX > cx + radius || a.maxZ < cz - radius || a.minZ > cz + radius) continue
+                    var ok = true
+                    val start = areaPath.isEmpty
+                    for (k in a.xs.indices) {
+                        proj(a.xs[k], a.zs[k])
+                        if (tilted && qs < 0.28f) { ok = false; break }
+                        if (k == 0) areaPath.moveTo(qx, qy) else areaPath.lineTo(qx, qy)
+                    }
+                    if (ok) { areaPath.close(); any = true } else if (start) areaPath.reset()
+                }
+                if (any) { areaPaint.color = areaColors[col]; canvas.drawPath(areaPath, areaPaint) }
+            }
+        }
+        fun roadWidth(c: Int, bd: Int) = max(widthsM[c] * s, if (c == 2) 3.4f * d else 2.4f * d) * bandFactor[bd]
+        for (c in intArrayOf(3, 0, 1, 2)) for (bd in 0..4) {
+            val k = c * 5 + bd
+            if (bandCounts[k] == 0) continue
+            roadPaint.color = casings[c]
+            roadPaint.strokeWidth = roadWidth(c, bd) + 2.6f * d
+            canvas.drawLines(bandBufs[k], 0, bandCounts[k], roadPaint)
+        }
+        for (c in intArrayOf(3, 0, 1, 2)) for (bd in 0..4) {
+            val k = c * 5 + bd
+            if (bandCounts[k] == 0) continue
             roadPaint.color = colors[c]
-            roadPaint.strokeWidth = max(widthsM[c] * s, if (c == 2) 3.2f * d else 2.2f * d)
-            canvas.drawLines(bufs[c], 0, counts[c], roadPaint)
+            roadPaint.strokeWidth = roadWidth(c, bd)
+            canvas.drawLines(bandBufs[k], 0, bandCounts[k], roadPaint)
         }
 
         // route
         if (routePts.isNotEmpty() && routeEdgePt.isNotEmpty()) {
-            val from = routePts.size / 2
+            val total = routePts.size / 2
             val startEdge = max(0, routeIdx - 1)
             val first = routeEdgePt[min(startEdge, routeEdgePt.size - 1)]
-            val last = min(from, first + 6000)
-            path.reset()
-            var started = false
+            val last = min(total, first + 6000)
+            for (pth in routePaths) pth.reset()
+            routeUsed.fill(false)
+            var cur = -1; var lx = 0f; var ly = 0f; var ls = 1f
             for (p in first until last) {
-                val wx = routePts[p * 2] - cx; val wz = routePts[p * 2 + 1] - cz
-                val sx = px + (wx * rx + wz * rz) * s
-                val sy = py - (wx * fx + wz * fz) * s
-                if (!started) { path.moveTo(sx, sy); started = true } else path.lineTo(sx, sy)
+                proj(routePts[p * 2], routePts[p * 2 + 1])
+                if (p > first) {
+                    val sc = (ls + qs) / 2f
+                    if (sc < 0.28f) cur = -1
+                    else {
+                        val bd = if (tilted) band(sc) else 0
+                        if (bd != cur) { routePaths[bd].moveTo(lx, ly); cur = bd; routeUsed[bd] = true }
+                        routePaths[bd].lineTo(qx, qy)
+                    }
+                }
+                lx = qx; ly = qy; ls = qs
             }
             val w = max(10f * s, 6f * d)
-            routeCasing.strokeWidth = w + 5f * d
-            routePaint.strokeWidth = w
-            canvas.drawPath(path, routeCasing)
-            canvas.drawPath(path, routePaint)
+            for (bd in 0..4) if (routeUsed[bd]) { routeCasing.strokeWidth = (w + 5f * d) * bandFactor[bd]; canvas.drawPath(routePaths[bd], routeCasing) }
+            for (bd in 0..4) if (routeUsed[bd]) { routePaint.strokeWidth = w * bandFactor[bd]; canvas.drawPath(routePaths[bd], routePaint) }
         }
 
-        // city names when zoomed out a bit
-        if (zoomFactor < 0.9f) {
+        fun visible(mx: Float, my: Float) = !((tilted && qs < 0.3f) || qx < -mx || qx > width + mx || qy < -my || qy > height + my)
+
+        // big area (city) names
+        if (zoomFactor < 1.8f) {
+            val size = (26f * Math.pow(zoomFactor.toDouble(), 0.35).toFloat()).coerceIn(20f, 34f) * d
+            cityText.textSize = size; cityShadow.textSize = size
             for (c in m.cities) {
                 if (abs2(c.x - cx, c.z - cz) > radius * radius) continue
-                val wx = c.x - cx; val wz = c.z - cz
-                val sx = px + (wx * rx + wz * rz) * s
-                val sy = py - (wx * fx + wz * fz) * s
-                if (sx < -50 || sx > width + 50 || sy < -20 || sy > height + 20) continue
-                canvas.drawText(c.name, sx, sy, label)
+                proj(c.x, c.z)
+                if (!visible(120f * d, 30f * d)) continue
+                val name = c.name.uppercase()
+                val x = qx; val y = qy
+                scaled(x, y, fscale(qs)) {
+                    canvas.drawText(name, x + 1.5f * d, y + size * 0.35f + 1.5f * d, cityShadow)
+                    canvas.drawText(name, x, y + size * 0.35f, cityText)
+                }
             }
         }
 
-        // points of interest (fuel, rest areas, service, weigh stations ...)
+        // border crossings: checkpoint symbol, or the flag of the country being entered
+        if (zoomFactor > 0.35f) {
+            for (bp in m.borders) {
+                val wx = bp.x - cx; val wz = bp.z - cz
+                if (wx > radius || wx < -radius || wz > radius || wz < -radius) continue
+                proj(bp.x, bp.z)
+                if (!visible(40f * d, 40f * d)) continue
+                val x = qx; val y = qy
+                if (bp.kind == 0) {
+                    if (zoomFactor < 0.6f) continue
+                    scaled(x, y, fscale(qs)) {
+                        shieldText.textSize = 12f * d
+                        rect.set(x - 34f * d, y - 12f * d, x + 34f * d, y + 12f * d)
+                        shieldPaint.color = Color.WHITE
+                        canvas.drawRoundRect(rect, 4f * d, 4f * d, shieldPaint)
+                        shieldEdge.color = borderRed; shieldEdge.strokeWidth = 2.2f * d
+                        canvas.drawRoundRect(rect, 4f * d, 4f * d, shieldEdge)
+                        shieldEdge.color = Color.WHITE
+                        shieldText.color = borderRed
+                        canvas.drawText("BORDER", x, y + 4.5f * d, shieldText)
+                        shieldText.color = Color.WHITE
+                    }
+                } else {
+                    val flag = assets?.flag(bp.cc) ?: continue
+                    scaled(x, y, fscale(qs)) {
+                        canvas.drawCircle(x, y, 21f * d, whitePaint)
+                        rect.set(x - 19f * d, y - 19f * d, x + 19f * d, y + 19f * d)
+                        canvas.drawBitmap(flag, null, rect, bmpPaint)
+                    }
+                }
+            }
+        }
+
+        // road-number shields and company logos / names
+        if (zoomFactor > 0.5f) {
+            shieldText.textSize = 17f * d; shieldEdge.strokeWidth = 1.6f * d
+            for (rl in m.roadLabels) {
+                val wx = rl.x - cx; val wz = rl.z - cz
+                if (wx > radius || wx < -radius || wz > radius || wz < -radius) continue
+                proj(rl.x, rl.z)
+                if (!visible(40f * d, 20f * d)) continue
+                val x = qx; val y = qy
+                scaled(x, y, fscale(qs)) {
+                    val hw = shieldText.measureText(rl.text) / 2 + 6f * d; val hgt = 12f * d
+                    rect.set(x - hw, y - hgt, x + hw, y + hgt)
+                    shieldPaint.color = if (rl.text.startsWith("E")) Color.rgb(0, 128, 72) else Color.rgb(0, 64, 176)
+                    canvas.drawRoundRect(rect, 3f * d, 3f * d, shieldPaint)
+                    canvas.drawRoundRect(rect, 3f * d, 3f * d, shieldEdge)
+                    canvas.drawText(rl.text, x, y + 6f * d, shieldText)
+                }
+            }
+        }
+        if (zoomFactor > 0.75f) {
+            pillText.textSize = 15f * d
+            for (co in m.companies) {
+                val wx = co.x - cx; val wz = co.z - cz
+                if (wx > radius || wx < -radius || wz > radius || wz < -radius) continue
+                proj(co.x, co.z)
+                if (!visible(90f * d, 30f * d) || (tilted && qs < 0.35f)) continue
+                val x = qx; val y = qy
+                val logo = assets?.logo(co.id)
+                scaled(x, y, fscale(qs)) {
+                    shieldPaint.color = Color.argb(240, 250, 250, 252)
+                    if (logo != null) {
+                        rect.set(x - 56f * d, y - 16f * d, x + 56f * d, y + 16f * d)
+                        canvas.drawRoundRect(rect, 5f * d, 5f * d, shieldPaint)
+                        rect.set(x - 52f * d, y - 13f * d, x + 52f * d, y + 13f * d)
+                        canvas.drawBitmap(logo, null, rect, bmpPaint)
+                    } else {
+                        val name = m.companyNames[co.id.lowercase()] ?: co.id
+                        val hw = pillText.measureText(name) / 2 + 5f * d; val hgt = 11f * d
+                        rect.set(x - hw, y - hgt, x + hw, y + hgt)
+                        canvas.drawRoundRect(rect, 4f * d, 4f * d, shieldPaint)
+                        canvas.drawText(name, x, y + 5f * d, pillText)
+                    }
+                }
+            }
+        }
+
+        // points of interest (fuel, rest areas, service, garages, dealers, weigh stations, ferries ...)
         if (zoomFactor > 0.3f) {
             val r = if (zoomFactor > 0.8f) 24f * d else 18f * d
             poiTxt.textSize = r * 1.15f
-            val lim = radius
             for (p in m.pois) {
                 if (p.type !in showPoiTypes) continue
                 val wx = p.x - cx; val wz = p.z - cz
-                if (wx > lim || wx < -lim || wz > lim || wz < -lim) continue
-                val sx = px + (wx * rx + wz * rz) * s
-                val sy = py - (wx * fx + wz * fz) * s
-                if (sx < -r || sx > width + r || sy < -r || sy > height + r) continue
-                poiBg.color = poiColors[p.type] ?: Color.GRAY
-                canvas.drawCircle(sx, sy, r, poiBg)
-                canvas.drawText(poiLetters[p.type] ?: "?", sx, sy + r * 0.4f, poiTxt)
+                if (wx > radius || wx < -radius || wz > radius || wz < -radius) continue
+                proj(p.x, p.z)
+                if (!visible(r, r)) continue
+                val x = qx; val y = qy
+                scaled(x, y, fscale(qs)) {
+                    poiBg.color = poiColors[p.type] ?: Color.GRAY
+                    canvas.drawCircle(x, y, r, poiBg)
+                    canvas.drawText(poiLetters[p.type] ?: "?", x, y + r * 0.4f, poiTxt)
+                }
             }
         }
 
         // waypoints
         for (i in 0 until stops.size / 2) {
-            val wx = stops[i * 2] - cx; val wz = stops[i * 2 + 1] - cz
-            val sx = px + (wx * rx + wz * rz) * s
-            val sy = py - (wx * fx + wz * fz) * s
-            if (sx < -60 || sx > width + 60 || sy < -60 || sy > height + 60) continue
-            val r = 17f * d
-            stopBg.color = Color.rgb(25, 118, 210)
-            canvas.drawCircle(sx, sy, r, stopBg)
-            canvas.drawCircle(sx, sy, r, markerEdge)
-            poiTxt.textSize = r * 1.2f
-            canvas.drawText((i + 1).toString(), sx, sy + r * 0.42f, poiTxt)
+            proj(stops[i * 2], stops[i * 2 + 1])
+            if (qx < -60 || qx > width + 60 || qy < -60 || qy > height + 60) continue
+            val x = qx; val y = qy
+            scaled(x, y, fscale(qs)) {
+                val r = 17f * d
+                stopBg.color = Color.rgb(25, 118, 210)
+                canvas.drawCircle(x, y, r, stopBg)
+                canvas.drawCircle(x, y, r, markerEdge)
+                poiTxt.textSize = r * 1.2f
+                canvas.drawText((i + 1).toString(), x, y + r * 0.42f, poiTxt)
+            }
         }
 
         // next maneuver marker on the road
         val nm = nextManeuver
         if (nm != null) {
-            val wx = nm.x - cx; val wz = nm.z - cz
-            val sx = px + (wx * rx + wz * rz) * s
-            val sy = py - (wx * fx + wz * fz) * s
-            if (sx > -80 && sx < width + 80 && sy > -80 && sy < height + 80) {
-                val r = 26f * d
-                canvas.drawCircle(sx, sy, r, markerBg)
-                canvas.drawCircle(sx, sy, r, markerEdge)
-                // the glyph is drawn relative to the travel direction; with a frozen free-look view that no longer
-                // lines up with the screen, so show the pictogram only while following the truck
-                if (!isFree) Glyphs.draw(canvas, nm.turn, nm.exitNo, nm.angleDeg, sx, sy, r * 1.55f, Color.rgb(18, 92, 58))
-                else canvas.drawCircle(sx, sy, r * 0.35f, markerEdge)
+            proj(nm.x, nm.z)
+            if (qx > -80 && qx < width + 80 && qy > -80 && qy < height + 80) {
+                val x = qx; val y = qy
+                scaled(x, y, fscale(qs)) {
+                    val r = 26f * d
+                    canvas.drawCircle(x, y, r, markerBg)
+                    canvas.drawCircle(x, y, r, markerEdge)
+                    // the glyph is drawn relative to the travel direction; with a frozen free-look view that no longer
+                    // lines up with the screen, so show the pictogram only while following the truck
+                    if (!isFree) Glyphs.draw(canvas, nm.turn, nm.exitNo, nm.angleDeg, x, y, r * 1.55f, Color.rgb(18, 92, 58))
+                    else canvas.drawCircle(x, y, r * 0.35f, markerEdge)
+                }
             }
         }
 
-        // truck (at its real position and heading relative to the current view)
-        val twx = truckX - cx; val twz = truckZ - cz
-        val tx = px + (twx * rx + twz * rz) * s
-        val ty = py - (twx * fx + twz * fz) * s
+        // haze over the far distance
+        if (tilted) {
+            val sT = sin(tilt); val cT = cos(tilt)
+            val yFar = py - yMax * cT * (vE / (vE + yMax * sT))
+            val fadeTo = max(yFar + 60f, hh * 0.2f)
+            val a = (255f * min(1f, tilt / tiltMax)).toInt()
+            hazePaint.shader = android.graphics.LinearGradient(
+                0f, 0f, 0f, fadeTo,
+                intArrayOf(Color.rgb(34, 40, 54), Color.argb(a, 34, 40, 54), Color.argb(0, 34, 40, 54)), floatArrayOf(0f, 0.35f, 1f), android.graphics.Shader.TileMode.CLAMP,
+            )
+            canvas.drawRect(0f, 0f, width.toFloat(), fadeTo, hazePaint)
+        }
+
+        // truck (flat, at the pivot, heading relative to the current view)
+        val tx = px; val ty = py
         val t = 15f * d
         canvas.save()
         canvas.rotate(Math.toDegrees((bearing - vb).toDouble()).toFloat(), tx, ty)
@@ -345,6 +573,7 @@ class MapView(ctx: Context) : View(ctx) {
         canvas.restore()
     }
 
+    private val hazePaint = Paint()
     private val stopBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
     private fun abs2(dx: Float, dz: Float) = dx * dx + dz * dz
