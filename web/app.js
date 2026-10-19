@@ -480,7 +480,7 @@ function showTrips() {
   modal({
     title: 'Saved trips', message: list.length ? '' : 'No saved trips yet. Use Plan a trip (no game needed), or plan a route while driving and tap Save current trip.',
     items: rows, onItem: (i) => tripOptions(i),
-    buttons: [{ label: 'Close' }, { label: 'Plan a trip…', fn: () => { plan = newPlan(); setTimeout(showPlanner, 0); } }, { label: 'Save current trip', primary: true, fn: () => { setTimeout(saveCurrentTrip, 0); } }],
+    buttons: [{ label: 'Close' }, { label: 'Plan a trip…', fn: () => { plan = newPlan(); setTimeout(showPlanner, 0); } }, { label: 'Import / export…', fn: () => { setTimeout(tripFileMenu, 0); } }, { label: 'Save current trip', primary: true, fn: () => { setTimeout(saveCurrentTrip, 0); } }],
   });
 }
 function tripOptions(i) {
@@ -488,7 +488,7 @@ function tripOptions(i) {
   const items = [];
   if (t.start) items.push('Drive this trip (to its start first)');
   items.push(t.start ? 'Drive from here (skip its start)' : 'Start this trip from here');
-  items.push('View / edit the plan', 'Rename', 'Delete');
+  items.push('View / edit the plan', 'Export this trip…', 'Rename', 'Delete');
   modal({
     title: t.name, items,
     onItem: (k) => {
@@ -496,6 +496,7 @@ function tripOptions(i) {
       if (what.startsWith('Drive this trip')) startSavedTrip(t, true);
       else if (what.startsWith('Drive from here') || what.startsWith('Start this trip')) startSavedTrip(t);
       else if (what.startsWith('View')) editSavedTrip(t);
+      else if (what.startsWith('Export')) exportTrips([t], t.name);
       else if (what === 'Rename') modal({ title: 'Rename trip', input: { value: t.name }, buttons: [{ label: 'Cancel' }, { label: 'Rename', primary: true, fn: (v) => {
         const name = (v || '').trim(); if (!name || name === t.name) return;
         const l2 = loadTrips().filter((x, idx) => idx === i || x.name !== name);
@@ -704,7 +705,7 @@ function toggleTrip() {
   $('trip').style.display = show ? 'block' : 'none';
   for (const id of ['zoom', 'compass', 'alt', 'banner', 'bottom', 'status']) $(id).style.display = show ? 'none' : (id === 'zoom' ? 'flex' : id === 'alt' ? 'flex' : id === 'banner' ? 'flex' : id === 'bottom' ? 'flex' : 'block');
   $('recentre').style.display = !show && mapView.free ? 'block' : 'none';
-  $('btnTrip').textContent = show ? 'Map' : 'Trip';
+  $('btnTrip').textContent = show ? 'Map' : 'Job Info';
   if (show) { setLanes(null); updateTrip(); }
 }
 const row = (k, v, color) => '<div class="row"><span>' + k + '</span><b' + (color ? ' style="color:' + color + '"' : '') + '>' + v + '</b></div>';

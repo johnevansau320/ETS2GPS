@@ -344,7 +344,7 @@ class MainActivity : Activity() {
             b.setPadding(dp(4), 0, dp(4), 0)
             menu.addView(b, LinearLayout.LayoutParams(dp(88), dp(46)).apply { topMargin = dp(3); bottomMargin = dp(3) })
         }
-        tripBtn = button("Trip") { toggleTrip() }
+        tripBtn = button("Job Info") { toggleTrip() }
         tripBtn.setBackgroundColor(Color.rgb(25, 118, 210))
         menuButton(tripBtn)
         menu.addView(View(this), LinearLayout.LayoutParams(dp(88), dp(10)))
@@ -862,7 +862,7 @@ class MainActivity : Activity() {
         if (show) setLaneUi(null)
         altText.visibility = if (show) View.GONE else View.VISIBLE
         recentreBtn.visibility = if (show || !mapView.free || planning) View.GONE else View.VISIBLE
-        tripBtn.text = if (show) "Map" else "Trip"
+        tripBtn.text = if (show) "Map" else "Job Info"
         banner.visibility = if (show) View.GONE else View.VISIBLE // the dashboard uses the whole screen
         bottomBar.visibility = if (show) View.GONE else View.VISIBLE
         statusText.visibility = if (show) View.GONE else View.VISIBLE
@@ -1267,22 +1267,26 @@ class MainActivity : Activity() {
 
     private fun showTrips() {
         val list = loadTrips()
-        val b = AlertDialog.Builder(this).setTitle("Saved trips")
+        val rows = ArrayList<String>()
+        for (t in list) {
+            val km = t.lengthM * distScale / 1000f
+            val mode = RouteMode.values().getOrNull(t.mode)?.label ?: ""
+            rows.add("${t.name}\n${if (km >= 1f) String.format(java.util.Locale.US, "%.0f km", km) + " \u00b7 " else ""}" +
+                "${t.stops.size} waypoint${if (t.stops.size == 1) "" else "s"} \u00b7 $mode")
+        }
+        rows.add("\u21e9  Import trips from a file\u2026")
+        if (list.isNotEmpty()) rows.add("\u21e7  Export all trips\u2026")
+        AlertDialog.Builder(this).setTitle(if (list.isEmpty()) "Saved trips (none yet - use Plan a trip)" else "Saved trips")
             .setPositiveButton("Save current trip") { _, _ -> saveCurrentTrip() }
             .setNeutralButton("Plan a trip\u2026") { _, _ -> plan = PlanDraft(); showPlanner() }
             .setNegativeButton("Close", null)
-        if (list.isEmpty()) {
-            b.setMessage("No saved trips yet. Use Plan a trip (no game needed), or plan a route while driving and tap Save current trip.")
-        } else {
-            val rows = list.map { t ->
-                val km = t.lengthM * distScale / 1000f
-                val mode = RouteMode.values().getOrNull(t.mode)?.label ?: ""
-                "${t.name}\n${if (km >= 1f) String.format(java.util.Locale.US, "%.0f km", km) + " \u00b7 " else ""}" +
-                    "${t.stops.size} waypoint${if (t.stops.size == 1) "" else "s"} \u00b7 $mode"
-            }
-            b.setItems(rows.toTypedArray()) { _, i -> tripOptions(list, i) }
-        }
-        b.show()
+            .setItems(rows.toTypedArray()) { _, i ->
+                when {
+                    i < list.size -> tripOptions(list, i)
+                    i == list.size -> importTripsDialog()
+                    else -> exportTrips(list, "ETS2 trips")
+                }
+            }.show()
     }
 
     private fun tripOptions(list: MutableList<SavedTrip>, i: Int) {
@@ -1290,7 +1294,7 @@ class MainActivity : Activity() {
         val items = ArrayList<String>()
         if (t.start != null) items.add("Drive this trip (to its start first)")
         items.add(if (t.start != null) "Drive from here (skip its start)" else "Start this trip from here")
-        items.add("View / edit the plan"); items.add("Rename"); items.add("Delete")
+        items.add("View / edit the plan"); items.add("Export this trip\u2026"); items.add("Rename"); items.add("Delete")
         AlertDialog.Builder(this).setTitle(t.name)
             .setItems(items.toTypedArray()) { _, k ->
                 val what = items[k]
@@ -1298,6 +1302,7 @@ class MainActivity : Activity() {
                     what.startsWith("Drive this trip") -> startSavedTrip(t, true)
                     what.startsWith("Drive from here") || what.startsWith("Start this trip") -> startSavedTrip(t)
                     what.startsWith("View") -> editSavedTrip(t)
+                    what.startsWith("Export") -> exportTrips(listOf(t), t.name)
                     what == "Rename" -> renameTrip(list, i)
                     else -> { list.removeAt(i); storeTrips(list); toast("Deleted: ${t.name}") }
                 }
@@ -1692,6 +1697,93 @@ class MainActivity : Activity() {
         val trip = SavedTrip("", routeMode.ordinal, dest, ArrayList(plan.stops), plan.lengthM, avoidFerries, plan.start)
         exitPlanView()
         startSavedTrip(trip, true)
+    }
+
+    // ------------------------------------------------------------------ share trips (files) --
+
+    private val REQ_EXPORT_TRIPS = 4101
+    private val REQ_IMPORT_TRIPS = 4102
+    private var pendingExportText: String? = null
+
+    private fun toData(t: SavedTrip) = TripData(
+        t.name, RouteMode.values().getOrNull(t.mode)?.name ?: "HEAVY", t.avoidFerries, t.start?.let { TripPt(it.x, it.z, it.name) },
+        t.stops.map { TripPt(it.x, it.z, it.name) }, TripPt(t.dest.x, t.dest.z, t.dest.name), t.lengthM,
+    )
+
+    private fun fromData(d: TripData) = SavedTrip(
+        d.name, RouteMode.values().indexOfFirst { it.name == d.mode }.coerceAtLeast(0), Stop(d.dest.x, d.dest.z, d.dest.name),
+        d.stops.map { Stop(it.x, it.z, it.name) }, d.lengthM, d.avoidFerries, d.start?.let { Stop(it.x, it.z, it.name) },
+    )
+
+    /** Writes trips to a trip file the user picks (a file manager, Drive, a messaging app ...) with the system file dialog. */
+    private fun exportTrips(trips: List<SavedTrip>, name: String) {
+        if (trips.isEmpty()) { toast("No saved trips to export"); return }
+        pendingExportText = TripFile.toJson(trips.map { toData(it) })
+        val safe = name.replace(Regex("[\\\\/:*?\"<>|\u2192]+"), "-").trim().ifEmpty { "trip" }
+        val i = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(android.content.Intent.CATEGORY_OPENABLE).setType("application/json")
+            .putExtra(android.content.Intent.EXTRA_TITLE, "$safe.ets2trip")
+        try { startActivityForResult(i, REQ_EXPORT_TRIPS) } catch (_: Exception) { toast("No file manager available to save the file") }
+    }
+
+    private fun importTripsDialog() {
+        val i = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(android.content.Intent.CATEGORY_OPENABLE).setType("*/*")
+        try { startActivityForResult(i, REQ_IMPORT_TRIPS) } catch (_: Exception) { toast("No file manager available to open the file") }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) { pendingExportText = null; return }
+        when (requestCode) {
+            REQ_EXPORT_TRIPS -> {
+                val text = pendingExportText ?: return
+                pendingExportText = null
+                try {
+                    contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                    toast("Trips exported")
+                } catch (e: Exception) { toast("Could not save the file: ${e.message}") }
+            }
+            REQ_IMPORT_TRIPS -> {
+                try {
+                    val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
+                    if (bytes.size > TripFile.MAX_CHARS * 4) toast("That file is too big to be a trip file")
+                    else toast(importTripsFromText(String(bytes, Charsets.UTF_8)))
+                } catch (e: Exception) { toast("Could not read the file: ${e.message}") }
+            }
+        }
+    }
+
+    private fun sameTrip(a: SavedTrip, b: SavedTrip): Boolean =
+        Math.abs(a.dest.x - b.dest.x) < 1 && Math.abs(a.dest.z - b.dest.z) < 1 && a.stops.size == b.stops.size &&
+            a.stops.indices.all { Math.abs(a.stops[it].x - b.stops[it].x) < 1 && Math.abs(a.stops[it].z - b.stops[it].z) < 1 } &&
+            (a.start == null) == (b.start == null) && (a.start == null || (Math.abs(a.start.x - b.start!!.x) < 1 && Math.abs(a.start.z - b.start.z) < 1))
+
+    /** Adds the trips in a trip file to the saved trips; returns a short message about what happened. */
+    private fun importTripsFromText(text: String): String {
+        val res = TripFile.parse(text)
+        if (res.error != null) return res.error
+        val list = loadTrips(); val m = map
+        var added = 0; var dupes = 0; var outside = 0
+        for (d in res.trips) {
+            val t = fromData(d)
+            val pts = listOf(t.dest) + t.stops + listOfNotNull(t.start)
+            // positions outside the loaded map: made for a different map, they could not be routed
+            if (m != null && pts.any { it.x < m.minX - 20000 || it.x > m.maxX + 20000 || it.z < m.minZ - 20000 || it.z > m.maxZ + 20000 }) { outside++; continue }
+            if (list.any { sameTrip(it, t) }) { dupes++; continue }
+            var name = t.name; var n = 2
+            while (list.any { it.name == name }) name = "${t.name} (${n++})"
+            list.add(0, SavedTrip(name, t.mode, t.dest, t.stops, t.lengthM, t.avoidFerries, t.start))
+            added++
+        }
+        if (added > 0) storeTrips(list)
+        val parts = arrayListOf(if (added == 1) "1 trip imported" else "$added trips imported")
+        if (dupes > 0) parts.add("$dupes already saved")
+        val bad = res.skipped + outside
+        if (bad > 0) parts.add("$bad skipped (" + (if (outside > 0) "not on this map or " else "") + "not valid)")
+        return parts.joinToString(", ")
     }
 
     /** Opens a saved trip in the planner (to look at it on the map, change it and save it again). */

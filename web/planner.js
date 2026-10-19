@@ -235,3 +235,113 @@ $('planEdit').onclick = () => { exitPlanView(); showPlanner(); };
 $('planSave').onclick = () => savePlan();
 $('planDrive').onclick = drivePlan;
 $('planDone').onclick = exitPlanView;
+
+// ------------------------------------------------------------------------- share trips (files) --
+// The trip file (*.ets2trip, plain JSON) is the same in the Windows app, this web version and the Android app. A file is
+// data: everything in it is validated and nothing in it is ever executed.
+const TRIP_FORMAT = 'ets2gps-trip', TRIP_MAX = { trips: 200, stops: 50, chars: 1000000, name: 80 };
+const TRIP_MODES = ['HEAVY', 'FASTEST', 'TOURIST'];
+
+function tripsToFileText(list) {
+  const pt = (p) => (p ? { x: Math.round(p.x * 10) / 10, z: Math.round(p.z * 10) / 10, name: p.name } : null);
+  return JSON.stringify({
+    format: TRIP_FORMAT, version: 1,
+    note: 'ETS2 GPS trip file. Positions are map coordinates: they fit the same map (game and ProMods versions) they were made on.',
+    trips: list.map((t) => ({ name: t.name, mode: t.mode, avoidFerries: !!t.ferries, start: pt(t.start), stops: t.stops.map(pt), dest: pt(t.dest), lengthM: Math.round(t.len || 0) })),
+  }, null, 2);
+}
+
+function parseTripFile(text) {
+  const fail = (error) => ({ trips: [], skipped: 0, error });
+  if (typeof text !== 'string' || text.length > TRIP_MAX.chars) return fail('That file is too big to be a trip file');
+  let root;
+  try { root = JSON.parse(text); } catch (e) { return fail('This is not an ETS2 GPS trip file'); }
+  if (!root || root.format !== TRIP_FORMAT) return fail('This is not an ETS2 GPS trip file');
+  if (typeof root.version === 'number' && root.version > 1) return fail('This trip file is from a newer version of ETS2 GPS - update the app');
+  if (!Array.isArray(root.trips)) return fail('The file contains no trips');
+  const clean = (s, fb) => { s = String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, '').trim(); if (!s) s = fb; return s.length > TRIP_MAX.name ? s.slice(0, TRIP_MAX.name) : s; };
+  const point = (o, fb) => {
+    if (!o || typeof o !== 'object' || typeof o.x !== 'number' || typeof o.z !== 'number' || !isFinite(o.x) || !isFinite(o.z) || Math.abs(o.x) > 1e7 || Math.abs(o.z) > 1e7) return null;
+    return { x: o.x, z: o.z, name: clean(o.name, fb) };
+  };
+  const trips = []; let skipped = 0;
+  for (const e of root.trips) {
+    if (trips.length >= TRIP_MAX.trips || !e || typeof e !== 'object') { skipped++; continue; }
+    const dest = point(e.dest, 'Destination');
+    if (!dest) { skipped++; continue; }
+    const stops = []; let bad = false;
+    if (Array.isArray(e.stops)) for (const s of e.stops) { const p = point(s, 'Stop ' + (stops.length + 1)); if (!p || stops.length >= TRIP_MAX.stops) { bad = true; break; } stops.push(p); }
+    if (bad) { skipped++; continue; }
+    const start = e.start ? point(e.start, 'Start') : null;
+    let mode = typeof e.mode === 'string' ? e.mode.toUpperCase() : 'HEAVY';
+    if (!TRIP_MODES.includes(mode)) mode = 'HEAVY';
+    const len = typeof e.lengthM === 'number' && isFinite(e.lengthM) ? Math.min(1e8, Math.max(0, e.lengthM)) : 0;
+    trips.push({ name: clean(e.name, start ? start.name + ' → ' + dest.name : 'Imported trip'), mode, ferries: e.avoidFerries === true, start, dest, stops, len });
+  }
+  return { trips, skipped, error: null };
+}
+
+const sameTrip = (a, b) => Math.abs(a.dest.x - b.dest.x) < 1 && Math.abs(a.dest.z - b.dest.z) < 1 && a.stops.length === b.stops.length &&
+  a.stops.every((s, i) => Math.abs(s.x - b.stops[i].x) < 1 && Math.abs(s.z - b.stops[i].z) < 1) &&
+  !!a.start === !!b.start && (!a.start || (Math.abs(a.start.x - b.start.x) < 1 && Math.abs(a.start.z - b.start.z) < 1));
+
+// Adds the trips in a trip file to the saved trips; returns a short message about what happened.
+function importTripsFromText(text) {
+  const res = parseTripFile(text);
+  if (res.error) return res.error;
+  const list = loadTrips(), m = map;
+  let added = 0, dupes = 0, outside = 0;
+  for (const t of res.trips) {
+    const pts = [t.dest, ...t.stops].concat(t.start ? [t.start] : []);
+    // positions outside the loaded map: made for a different map, they could not be routed
+    if (m && pts.some((p) => p.x < m.minX - 20000 || p.x > m.maxX + 20000 || p.z < m.minZ - 20000 || p.z > m.maxZ + 20000)) { outside++; continue; }
+    if (list.some((x) => sameTrip(x, t))) { dupes++; continue; }
+    let name = t.name, n = 2;
+    while (list.some((x) => x.name === name)) name = t.name + ' (' + (n++) + ')';
+    list.unshift({ ...t, name });
+    added++;
+  }
+  if (added) ls.set('trips', list);
+  const parts = [added === 1 ? '1 trip imported' : added + ' trips imported'];
+  if (dupes) parts.push(dupes + ' already saved');
+  const bad = res.skipped + outside;
+  if (bad) parts.push(bad + ' skipped (' + (outside ? 'not on this map or ' : '') + 'not valid)');
+  return parts.join(', ');
+}
+
+function downloadText(fileName, text) {
+  const blob = new Blob([text], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = fileName;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function exportTrips(list, name) {
+  if (!list.length) { toast('No saved trips to export'); return; }
+  const safe = String(name).replace(/[\\/:*?"<>|→]+/g, '-').trim() || 'trip';
+  downloadText(safe + '.ets2trip', tripsToFileText(list));
+  toast(list.length === 1 ? 'Trip exported: ' + safe + '.ets2trip' : list.length + ' trips exported: ' + safe + '.ets2trip');
+}
+
+function importTripsDialog() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.ets2trip,.json,application/json';
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    if (f.size > TRIP_MAX.chars * 4) { toast('That file is too big to be a trip file'); return; }
+    f.text().then((t) => toast(importTripsFromText(t))).catch(() => toast('Could not read the file'));
+  };
+  inp.click();
+}
+
+function tripFileMenu() {
+  const items = ['Import trips from a file…'];
+  if (loadTrips().length) items.push('Export all trips…');
+  modal({
+    title: 'Share trips', message: 'Trip files (*.ets2trip) can be sent to friends or posted online; the Windows app, this web version and the Android app all read them.',
+    items, buttons: [{ label: 'Cancel' }],
+    onItem: (i) => { if (i === 0) importTripsDialog(); else exportTrips(loadTrips(), 'ETS2 trips'); },
+  });
+}

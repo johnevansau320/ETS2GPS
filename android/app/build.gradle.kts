@@ -32,4 +32,5 @@ android {
 // Zero third-party dependencies on purpose: plain Android framework APIs only.
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013") // the real org.json, so the trip file code can be tested off-device
 }
