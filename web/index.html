@@ -28,8 +28,10 @@ html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font
 #bThen span { position:absolute; top:-1px; left:0; right:0; text-align:center; font-size:10px; opacity:.8; }
 #bMsg { font-size:17px; }
 #lanes { left:50%; transform:translateX(-50%); top:calc(max(6px, env(safe-area-inset-top)) + 100px); display:none; }
-#menu { z-index:5; left:10px; top:calc(max(6px, env(safe-area-inset-top)) + 106px); bottom:84px; display:flex; flex-direction:column; justify-content:center; gap:6px; overflow-y:auto; scrollbar-width:none; padding-bottom:2px; }
+#menu { z-index:5; left:10px; top:calc(max(6px, env(safe-area-inset-top)) + 106px); bottom:84px; display:flex; flex-direction:column; justify-content:flex-start; gap:6px; overflow-y:auto; scrollbar-width:none; padding-bottom:2px; }
 #menu::-webkit-scrollbar { display:none; }
+#menu > :first-child { margin-top:auto; }
+#menu > :last-child { margin-bottom:auto; }
 .btn { width:104px; height:50px; flex:none; background:var(--btn); color:#fff; border:0; border-radius:4px; font-size:18px; font-family:inherit; }
 .btn:active { background:var(--btn2); }
 .btn.blue { background:var(--accent); }
