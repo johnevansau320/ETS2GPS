@@ -27,6 +27,23 @@ class MapExtrasTest {
     }
 
     @Test
+    fun readsFlyoverLift() {
+        val path = System.getenv("ETS2_MAP")
+        assumeTrue(path != null && File(path).exists())
+        val m = MapData.load(File(path!!))
+        assumeTrue(m.eHasLift.isNotEmpty())   // maps before file version 10 have none
+        val lifted = m.eHasLift.count { it }
+        println("lifted road pieces $lifted of ${m.edgeCount}")
+        assertTrue(lifted > 1000 && lifted < m.edgeCount / 4)
+        assertTrue(m.ptLift.size == m.ptX.size)
+        val e = m.eHasLift.indexOfFirst { it }
+        // a lifted piece has some point above ground, and a reversed edge reads the same lifts backwards
+        assertTrue((0 until m.deCount(e shl 1)).any { m.deLift(e shl 1, it) > 0f })
+        val n = m.deCount(e shl 1)
+        assertEquals(m.deLift(e shl 1, 0), m.deLift((e shl 1) or 1, n - 1), 0f)
+    }
+
+    @Test
     fun readsTheAssetPack() {
         val path = System.getenv("ETS2_ASSETS")
         assumeTrue(path != null && File(path).exists())

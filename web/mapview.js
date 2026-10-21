@@ -9,7 +9,7 @@ class MapView {
     this.canvas = canvas;
     this.map = null;
     this.truckX = 0; this.truckZ = 0; this.bearing = 0; this.hasFix = false;
-    this.routePts = new Float32Array(0); this.routeEdgePt = new Int32Array(0); this.routeIdx = 0;
+    this.routePts = new Float32Array(0); this.routeEdgePt = new Int32Array(0); this.routeIdx = 0; this.routeLift = new Uint8Array(0); this.planLift = new Uint8Array(0);
     this.stops = []; // [{x,z}]
     this.nextManeuver = null;
     this.onLongPress = null; this.onFreeChanged = null;
@@ -21,8 +21,6 @@ class MapView {
     this.colors = ['rgb(70,96,128)', 'rgb(84,114,150)', 'rgb(236,190,90)', 'rgb(64,88,118)'];
     this.casings = ['rgb(26,32,44)', 'rgb(26,32,44)', 'rgb(120,84,24)', 'rgb(26,32,44)'];
     this.areaColors = ['rgb(52,64,84)', 'rgb(226,190,136)', 'rgb(212,160,92)', 'rgb(112,160,104)'];
-    this.poiColors = { 1: '#e67814', 3: '#286edc', 2: '#788291', 4: '#965abe', 5: '#be3c3c', 6: '#3c8c78', 7: '#a08c28', 8: '#5a5aaa', 9: '#0078aa', 10: '#6e6e7c' };
-    this.poiLetters = { 1: 'F', 3: 'P', 2: 'S', 4: 'W', 5: 'D', 6: 'G', 7: 'R', 8: 'H', 9: 'B', 10: 'T' };
     this.bufs = [[], [], [], []];
     this.tilt = 0; this.tiltMax = 52 * Math.PI / 180; this.driving = false; this.speedKmh = 0; this.dragging = false; this.assets = null;
     // plan mode: the map shows a planned trip (north up, any zoom, no truck) instead of following the truck
@@ -51,7 +49,7 @@ class MapView {
     this.planMode = true; this.free = true; this.freeBearing = 0; this.freeCx = cx; this.freeCz = cz; this.userZoom = zoom;
   }
   hidePlan() {
-    this.planMode = false; this.free = false; this.pins = []; this.planPts = new Float32Array(0); this.planEdgePt = new Int32Array(0); this.userZoom = 1;
+    this.planMode = false; this.free = false; this.pins = []; this.planPts = new Float32Array(0); this.planEdgePt = new Int32Array(0); this.planLift = new Uint8Array(0); this.userZoom = 1;
   }
 
   enterFree() {
@@ -203,48 +201,86 @@ class MapView {
       }
     }
 
-    // roads: outline pass, then fill pass; far roads (per depth band) are drawn thinner
-    const paths = [[], [], [], []];
-    for (const cls of [3, 0, 1, 2]) {
-      const set = paths[cls];
-      const get = (bd) => set[bd] || (set[bd] = new Path2D());
-      for (const e of this.bufs[cls]) {
-        const a = m.ePtStart[e], b = Math.min(m.ePtStart[e + 1], a + 255), n = b - a;
-        const qs = [];
-        for (let i = 0; i < n; i++) qs.push(proj(m.ptX[a + i], m.ptZ[a + i]));
-        if (!tilted) {
-          const p = get(0); p.moveTo(qs[0][0], qs[0][1]);
-          for (let i = 1; i < n; i++) p.lineTo(qs[i][0], qs[i][1]);
-          continue;
-        }
-        let cur = -1;
-        for (let i = 0; i + 1 < n; i++) {
-          const sc = (qs[i][2] + qs[i + 1][2]) / 2;
-          if (sc < 0.28) { cur = -1; continue; }
-          const bd = band(sc), p = get(bd);
-          if (bd !== cur) { p.moveTo(qs[i][0], qs[i][1]); cur = bd; }
-          p.lineTo(qs[i + 1][0], qs[i + 1][1]);
+    // roads: outline pass, then fill pass; far roads (per depth band) are drawn thinner.
+    // Roads on flyovers and bridges are drawn after the rest, raised and with a shadow, so the roads below pass underneath.
+    const hasLift = !!(m.eHasLift && m.eHasLift.length);
+    const elev = [[], [], [], []];
+    if (hasLift) for (let cls = 0; cls < 4; cls++) { const keep = []; for (const e of this.bufs[cls]) (m.eHasLift[e] ? elev[cls] : keep).push(e); this.bufs[cls] = keep; }
+    const liftK = tilted ? s * Math.sin(this.tilt) : 0;   // screen px for one metre of height
+    const order = [3, 0, 1, 2];
+    // mode 0: on the ground, 1: raised deck, 2: its shadow on the ground
+    const buildPaths = (lists, mode) => {
+      const paths = [[], [], [], []];
+      for (const cls of order) {
+        const set = paths[cls];
+        const get = (bd) => set[bd] || (set[bd] = new Path2D());
+        for (const e of lists[cls]) {
+          const a = m.ePtStart[e], b = Math.min(m.ePtStart[e + 1], a + 255), n = b - a;
+          const qs = [];
+          for (let i = 0; i < n; i++) {
+            const q = proj(m.ptX[a + i], m.ptZ[a + i]);
+            if (mode) {
+              const lf = 0.5 * m.ptLift[a + i];
+              if (mode === 1) q[1] -= lf * liftK * q[2];
+              else if (!tilted) { const o = Math.min(12, lf * s * 0.3); q[0] += o; q[1] += o; }
+            }
+            qs.push(q);
+          }
+          if (!tilted) {
+            const p = get(0); p.moveTo(qs[0][0], qs[0][1]);
+            for (let i = 1; i < n; i++) p.lineTo(qs[i][0], qs[i][1]);
+            continue;
+          }
+          let cur = -1;
+          for (let i = 0; i + 1 < n; i++) {
+            const sc = (qs[i][2] + qs[i + 1][2]) / 2;
+            if (sc < 0.28) { cur = -1; continue; }
+            const bd = band(sc), p = get(bd);
+            if (bd !== cur) { p.moveTo(qs[i][0], qs[i][1]); cur = bd; }
+            p.lineTo(qs[i + 1][0], qs[i + 1][1]);
+          }
         }
       }
-    }
+      return paths;
+    };
     c.lineCap = 'round'; c.lineJoin = 'round';
     const wid = (cls, bd) => Math.max(this.widthsM[cls] * s, cls === 2 ? 3.4 : 2.4) * BF[bd];
-    for (const cls of [3, 0, 1, 2]) paths[cls].forEach((p, bd) => { if (p) { c.strokeStyle = this.casings[cls]; c.lineWidth = wid(cls, bd) + 2.6; c.stroke(p); } });
-    for (const cls of [3, 0, 1, 2]) paths[cls].forEach((p, bd) => { if (p) { c.strokeStyle = this.colors[cls]; c.lineWidth = wid(cls, bd); c.stroke(p); } });
+    const drawRoadSets = (lists, mode) => {
+      if (mode === 2) {
+        const sh = buildPaths(lists, 2);
+        for (const cls of order) sh[cls].forEach((p, bd) => { if (p) { c.strokeStyle = 'rgba(6,8,14,0.41)'; c.lineWidth = wid(cls, bd) + 5; c.stroke(p); } });
+        mode = 1;
+      }
+      const paths = buildPaths(lists, mode);
+      for (const cls of order) paths[cls].forEach((p, bd) => { if (p) { c.strokeStyle = this.casings[cls]; c.lineWidth = wid(cls, bd) + 2.6; c.stroke(p); } });
+      for (const cls of order) paths[cls].forEach((p, bd) => { if (p) { c.strokeStyle = this.colors[cls]; c.lineWidth = wid(cls, bd); c.stroke(p); } });
+    };
+    drawRoadSets(this.bufs, 0);
 
     // route
     const rp0 = this.planMode ? this.planPts : this.routePts, re0 = this.planMode ? this.planEdgePt : this.routeEdgePt;
+    let rl = this.planMode ? this.planLift : this.routeLift;
+    if (!rl || rl.length !== rp0.length / 2) rl = null;
+    let rFirst = 0, rLast = 0, routeLifted = false;
+    const rw = Math.max(10 * s, 6);
     if (rp0.length && re0.length) {
       const total = rp0.length / 2;
-      const first = this.planMode ? 0 : re0[Math.min(Math.max(0, this.routeIdx - 1), re0.length - 1)];
-      const last = this.planMode ? total : Math.min(total, first + 6000);
-      const w = Math.max(10 * s, 6), rp = [];
+      rFirst = this.planMode ? 0 : re0[Math.min(Math.max(0, this.routeIdx - 1), re0.length - 1)];
+      rLast = this.planMode ? total : Math.min(total, rFirst + 6000);
+      if (rl) for (let p = rFirst; p < rLast && !routeLifted; p++) routeLifted = rl[p] > 0;
+    }
+    // deck false: the route on the ground; deck true: the parts on flyovers / bridges, raised; ghost: the ground route again, faint
+    const drawRoute = (deck, ghost) => {
+      if (rLast <= rFirst) return;
+      const rp = [];
       let cur = -1, lq = null;
-      for (let p = first; p < last; p++) {
+      for (let p = rFirst; p < rLast; p++) {
         const q = proj(rp0[p * 2], rp0[p * 2 + 1]);
+        if (deck && rl) q[1] -= 0.5 * rl[p] * liftK * q[2];
         if (lq) {
+          const segUp = !!rl && (rl[p] > 0 || rl[p - 1] > 0);
           const sc = (lq[2] + q[2]) / 2;
-          if (sc < 0.28) cur = -1;
+          if (segUp !== deck || sc < 0.28) cur = -1;
           else {
             const bd = tilted ? band(sc) : 0, path = rp[bd] || (rp[bd] = new Path2D());
             if (bd !== cur) { path.moveTo(lq[0], lq[1]); cur = bd; }
@@ -253,8 +289,13 @@ class MapView {
         }
         lq = q;
       }
-      rp.forEach((p, bd) => { if (p) { c.strokeStyle = 'rgba(255,255,255,0.92)'; c.lineWidth = (w + 5) * BF[bd]; c.stroke(p); } });
-      rp.forEach((p, bd) => { if (p) { c.strokeStyle = 'rgb(36,132,255)'; c.lineWidth = w * BF[bd]; c.stroke(p); } });
+      if (!ghost) rp.forEach((p, bd) => { if (p) { c.strokeStyle = 'rgba(255,255,255,0.92)'; c.lineWidth = (rw + 5) * BF[bd]; c.stroke(p); } });
+      rp.forEach((p, bd) => { if (p) { c.strokeStyle = ghost ? 'rgba(36,132,255,0.47)' : 'rgb(36,132,255)'; c.lineWidth = rw * BF[bd]; c.stroke(p); } });
+    };
+    drawRoute(false, false);
+    if (hasLift) {
+      drawRoadSets(elev, 2);
+      if (routeLifted) { drawRoute(true, false); drawRoute(false, true); }   // the route below shows faintly through the deck above it
     }
 
     // scaled drawing around a point (labels keep facing the viewer, smaller in the distance)
@@ -270,7 +311,7 @@ class MapView {
     const visible = (q, mx, my) => !((tilted && q[2] < 0.3) || q[0] < -mx || q[0] > W + mx || q[1] < -my || q[1] > H + my);
 
     // big area (city) names
-    if (zoomFactor < 1.8) {
+    if (true) { // area (city) names stay on at every zoom level
       const size = Math.min(34, Math.max(this.planMode ? 11 : 20, 26 * Math.pow(zoomFactor, 0.35)));
       c.textAlign = 'center'; c.textBaseline = 'middle';
       for (const ci of m.cities) {
@@ -346,10 +387,7 @@ class MapView {
         const q = proj(p.x, p.z);
         if (!visible(q, r, r)) continue;
         at(q[0], q[1], fs(q[2]), () => {
-          c.fillStyle = this.poiColors[p.type] || '#888';
-          c.beginPath(); c.arc(q[0], q[1], r, 0, Math.PI * 2); c.fill();
-          c.font = 'bold ' + (r * 1.15) + 'px sans-serif'; c.textBaseline = 'middle'; c.textAlign = 'center';
-          c.fillStyle = '#fff'; c.fillText(this.poiLetters[p.type] || '?', q[0], q[1] + 1); c.textBaseline = 'alphabetic';
+          drawPoiIcon(c, p.type, q[0], q[1], r);
         });
       }
     }

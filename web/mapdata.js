@@ -20,7 +20,7 @@ class MapData {
     const magic = String.fromCharCode(u8[0], u8[1], u8[2], u8[3]);
     if (magic !== 'ETSM') throw new Error('not an ETS2 GPS map file');
     const ver = dv.getUint16(4, true);
-    if (ver < 2 || ver > 9) throw new Error('unsupported map version ' + ver + ' (rebuild the map or update the app)');
+    if (ver < 2 || ver > 10) throw new Error('unsupported map version ' + ver + ' (rebuild the map or update the app)');
     const m = new MapData();
     m.ver = ver;
     m.minX = dv.getFloat32(8, true); m.minZ = dv.getFloat32(12, true);
@@ -129,6 +129,17 @@ class MapData {
         }
       }
     }
+    m.ptLift = new Uint8Array(0); m.eHasLift = new Uint8Array(0);
+    // file version 10: how far each road point is above the road it crosses (flyovers, bridges), in 0.5 m units
+    if (ver >= 10 && o + 4 <= raw.byteLength) {
+      m.ptLift = new Uint8Array(total); m.eHasLift = new Uint8Array(en);
+      const lc = dv.getUint32(o, true); o += 4;
+      for (let i = 0; i < lc; i++) {
+        const e = dv.getUint32(o, true); o += 4;
+        const a = m.ePtStart[e], cnt = m.ePtStart[e + 1] - a;
+        m.ptLift.set(u8.subarray(o, o + cnt), a); m.eHasLift[e] = 1; o += cnt;
+      }
+    }
     m.buildGrid();
     return m;
   }
@@ -196,6 +207,8 @@ class MapData {
   deTo(de) { return (de & 1) === 0 ? this.eTo[de >> 1] : this.eFrom[de >> 1]; }
   deCount(de) { const e = de >> 1; return this.ePtStart[e + 1] - this.ePtStart[e]; }
   deX(de, i) { const e = de >> 1; return (de & 1) === 0 ? this.ptX[this.ePtStart[e] + i] : this.ptX[this.ePtStart[e + 1] - 1 - i]; }
+  // lift (metres) of point i of a directed edge
+  deLift(de, i) { if (!this.ptLift.length) return 0; const e = de >> 1; return 0.5 * ((de & 1) === 0 ? this.ptLift[this.ePtStart[e] + i] : this.ptLift[this.ePtStart[e + 1] - 1 - i]); }
   deZ(de, i) { const e = de >> 1; return (de & 1) === 0 ? this.ptZ[this.ePtStart[e] + i] : this.ptZ[this.ePtStart[e + 1] - 1 - i]; }
 
   findCity(id) { id = id.toLowerCase(); return this.cities.find((c) => c.id.toLowerCase() === id) || null; }

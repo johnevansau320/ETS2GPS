@@ -14,7 +14,8 @@ const fmt = (v, d = 0) => Number(v).toLocaleString('en-US', { minimumFractionDig
 let map = null, router = null, nav = null, truck = null;
 const motion = new MotionFilter(), elev = new ElevationLog();
 let routeMode = ROUTE_MODES.find((m) => m.key === ls.get('mode', 'HEAVY')) || ROUTE_MODES[0];
-let distScale = ls.get('scale', 19);
+let simScale = ls.get('scale', 19), realDist = ls.get('real', false);
+let distScale = realDist ? 1 : simScale;   // what map metres are multiplied by for display: 1 = real, simScale = game (Sim)
 let avoidFerries = ls.get('ferries', false);
 let hasDest = false, destX = 0, destZ = 0, destName = '', destIsPoi = false;
 let resume = null; // {x,z,name,stops} while a POI detour is active
@@ -296,7 +297,7 @@ function navTick() {
   if (next) {
     const what = n.instruction(next); setManeuver(next, n.shortDistance(st.distToNextM), what.charAt(0).toUpperCase() + what.slice(1) + (next.towards ? ' towards ' + next.towards : ''), st.following);
   }
-  if (!laneHidden() && st.lanes && st.lanesDistM * distScale < LANE_SHOW_M) setLanes(st.lanes, n.shortDistance(st.lanesDistM)); else setLanes(null);
+  if (!laneHidden() && st.lanes && st.lanesDistM * simScale < LANE_SHOW_M) setLanes(st.lanes, n.shortDistance(st.lanesDistM)); else setLanes(null);
   updatePace(n);
   const realMin = totS / paceRatio / 60, gameMin = realMin * TIME_SCALE;
   routeEtaGameMin = gameMin;
@@ -378,14 +379,14 @@ function computeRoute(x, z, name, opts = {}) {
       }
       let total = 0;
       for (const de of res.edges) total += m.deCount(de);
-      const pts = new Float32Array(total * 2), starts = new Int32Array(res.edges.length);
+      const pts = new Float32Array(total * 2), lift = new Uint8Array(total), starts = new Int32Array(res.edges.length);
       let p = 0;
-      res.edges.forEach((de, i) => { starts[i] = p; for (let k = 0; k < m.deCount(de); k++) { pts[p * 2] = m.deX(de, k); pts[p * 2 + 1] = m.deZ(de, k); p++; } });
+      res.edges.forEach((de, i) => { starts[i] = p; for (let k = 0; k < m.deCount(de); k++) { pts[p * 2] = m.deX(de, k); pts[p * 2 + 1] = m.deZ(de, k); lift[p] = Math.round(m.deLift(de, k) * 2); p++; } });
       n.distScale = distScale;
       n.arriveWord = legIsStop ? 'your waypoint' : 'your destination';
       afterM = am; afterS = asec;
       n.setRoute(res, remaining);
-      mapView.routePts = pts; mapView.routeEdgePt = starts; mapView.routeIdx = 0;
+      mapView.routePts = pts; mapView.routeLift = lift; mapView.routeEdgePt = starts; mapView.routeIdx = 0;
       setBannerMessage(null);
       if (opts.announce) voice.say(legIsStop
         ? 'Route to ' + tname + ', the first of ' + (waypoints.length + 1) + ' stops. ' + n.spokenDistance(res.lengthM) + '. ' + routeMode.label + ' routing.'
@@ -803,8 +804,10 @@ function showSettings() {
       });
       const tv = document.createElement('button'); tv.className = 'inline'; tv.textContent = 'Test voice';
       tv.onclick = () => { const sel = body.querySelector('input[name=vo]:checked'); voice.output = sel ? parseInt(sel.value, 10) : 0; voice.unlock(); voice.say('Voice guidance is working.'); }; body.appendChild(tv);
-      h('Distance scale (game shows map x19)');
-      const sc = document.createElement('input'); sc.type = 'number'; sc.id = 'setScale'; sc.value = distScale; sc.step = 'any'; body.appendChild(sc);
+      h('Distances');
+      const rl = document.createElement('label'); rl.innerHTML = '<input type="checkbox" id="setReal"' + (realDist ? ' checked' : '') + '> Real distances (turns, lane guidance, route length). Off = Sim distances like the game shows'; body.appendChild(rl);
+      const sl = document.createElement('div'); sl.style.cssText = 'font-size:13px;color:#aab3c0;margin-top:8px'; sl.textContent = 'Sim scale (game shows map metres x19)'; body.appendChild(sl);
+      const sc = document.createElement('input'); sc.type = 'number'; sc.id = 'setScale'; sc.value = simScale; sc.step = 'any'; body.appendChild(sc);
       const help = document.createElement('div'); help.style.cssText = 'font-size:12px;color:#aab3c0;margin-top:10px';
       help.textContent = 'Telemetry and the map come from the companion on your PC. On iPad: Settings > Display > Auto-Lock > Never, and use Share > Add to Home Screen for a full-screen app.';
       body.appendChild(help);
@@ -822,7 +825,9 @@ function saveSettings() {
   const rm = body.querySelector('input[name=rm]:checked');
   const md = rm && ROUTE_MODES.find((m) => m.key === rm.value);
   const sc = parseFloat(($('setScale') || {}).value);
-  if (sc > 0) { distScale = sc; ls.set('scale', sc); if (nav) nav.distScale = sc; }
+  if (sc > 0) { simScale = sc; ls.set('scale', sc); }
+  realDist = !!($('setReal') || {}).checked; ls.set('real', realDist);
+  distScale = realDist ? 1 : simScale; if (nav) nav.distScale = distScale;
   const vo = body.querySelector('input[name=vo]:checked');
   if (vo) { voice.output = parseInt(vo.value, 10); ls.set('voice_out', voice.output); }
   voice.enabled = !!($('setVoice') || {}).checked; ls.set('voice', voice.enabled); updateVoiceButton();
@@ -831,6 +836,17 @@ function saveSettings() {
   if (ferryChanged) setAvoidFerries(ferryOn, !(md && md.key !== routeMode.key));
   if (md && md.key !== routeMode.key) setRouteMode(md);
 }
+// cruise control follows the speed limit: the Windows app presses the game's cruise keys; this just switches it on and off
+let cruiseOn = false;
+function updateCruiseButton() { $('btnCruise').textContent = cruiseOn ? 'Cruise auto' : 'Cruise off'; }
+function cruiseCall(on) {
+  fetch('/cruise' + (on === undefined ? '' : '?on=' + (on ? 1 : 0)))
+    .then((r) => r.json())
+    .then((j) => { cruiseOn = !!j.on; updateCruiseButton(); if (on !== undefined) toast(cruiseOn ? 'Cruise control will follow the speed limit while the game is in front' : 'Cruise control stays where you set it'); })
+    .catch(() => { if (on !== undefined) toast('Needs the ETS2 GPS Windows app on the PC (it presses the cruise keys)'); });
+}
+$('btnCruise').onclick = () => cruiseCall(!cruiseOn);
+cruiseCall();
 function updateVoiceButton() { $('btnVoice').textContent = voice.enabled ? 'Voice on' : 'Voice off'; }
 
 // ---------------------------------------------------------------------------------- wiring --

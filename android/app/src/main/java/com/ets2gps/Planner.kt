@@ -6,7 +6,7 @@ import kotlin.math.min
 class PlanPoint(val x: Float, val z: Float, val name: String)
 
 /** The preview of a planned trip: the route as x,z pairs, where each edge starts in it, and its length (map metres) and time. */
-class PlanOut(val pts: FloatArray, val starts: IntArray, val lengthM: Float, val timeS: Float, val error: String?)
+class PlanOut(val pts: FloatArray, val starts: IntArray, val lengthM: Float, val timeS: Float, val error: String?, val lift: ByteArray = ByteArray(0))
 
 object TripPlan {
     private fun fail(text: String) = PlanOut(FloatArray(0), IntArray(0), 0f, 0f, text)
@@ -41,12 +41,12 @@ object TripPlan {
         if (edges.isEmpty()) return fail("The start and the destination are the same place")
         var total = 0
         for (de in edges) total += m.deCount(de)
-        val line = FloatArray(total * 2); val starts = IntArray(edges.size)
+        val line = FloatArray(total * 2); val lift = ByteArray(total); val starts = IntArray(edges.size)
         var p = 0
         for ((i, de) in edges.withIndex()) {
             starts[i] = p
-            for (k in 0 until m.deCount(de)) { line[p * 2] = m.deX(de, k); line[p * 2 + 1] = m.deZ(de, k); p++ }
+            for (k in 0 until m.deCount(de)) { line[p * 2] = m.deX(de, k); line[p * 2 + 1] = m.deZ(de, k); lift[p] = (m.deLift(de, k) * 2).toInt().toByte(); p++ }
         }
-        return PlanOut(line, starts, len, time, null)
+        return PlanOut(line, starts, len, time, null, lift)
     }
 }

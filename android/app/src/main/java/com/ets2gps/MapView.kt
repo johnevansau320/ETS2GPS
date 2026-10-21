@@ -30,6 +30,7 @@ class MapView(ctx: Context) : View(ctx) {
     var hasFix = false
 
     var routePts = FloatArray(0) // x,z pairs
+    var routeLift = ByteArray(0) // per route point: height above the road it crosses (0.5 m units)
     var stops = FloatArray(0) // waypoint positions, x,z pairs (drawn as numbered markers)
     var routeEdgePt = IntArray(0) // point index (pair index) where each route edge starts
     var routeIdx = 0
@@ -97,16 +98,33 @@ class MapView(ctx: Context) : View(ctx) {
     private val poiTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; textAlign = Paint.Align.CENTER; isFakeBoldText = true
     }
-    private val poiColors = mapOf(
-        Poi.FUEL to Color.rgb(230, 120, 20), Poi.PARKING to Color.rgb(40, 110, 220), Poi.SERVICE to Color.rgb(120, 130, 145),
-        Poi.WEIGH to Color.rgb(150, 90, 190), Poi.DEALER to Color.rgb(190, 60, 60), Poi.GARAGE to Color.rgb(60, 140, 120),
-        Poi.RECRUIT to Color.rgb(160, 140, 40), Poi.HOTEL to Color.rgb(90, 90, 170),
-        Poi.FERRY to Color.rgb(0, 120, 170), Poi.TRAIN to Color.rgb(110, 110, 124),
-    )
-    private val poiLetters = mapOf(
-        Poi.FUEL to "F", Poi.PARKING to "P", Poi.SERVICE to "S", Poi.WEIGH to "W",
-        Poi.DEALER to "D", Poi.GARAGE to "G", Poi.RECRUIT to "R", Poi.HOTEL to "H", Poi.FERRY to "B", Poi.TRAIN to "T",
-    )
+    private val poiEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.argb(235, 255, 255, 255) }
+    private val poiShadow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(90, 0, 0, 0) }
+    private val poiGlyph = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val poiRect = RectF()
+    private val poiShapes = HashMap<Int, Path>()
+    private fun poiShape(type: Int): Path? = poiShapes.getOrPut(type) {
+        val spec = PoiIcons.paths[type] ?: return null
+        try { SvgPath.parse(spec) } catch (e: Exception) { Path() }
+    }
+
+    /** A point-of-interest badge: coloured rounded square with a white pictogram. */
+    private fun drawPoi(canvas: Canvas, type: Int, x: Float, y: Float, r: Float) {
+        poiRect.set(x - r, y - r + r * 0.14f, x + r, y + r + r * 0.14f)
+        canvas.drawRoundRect(poiRect, r * 0.42f, r * 0.42f, poiShadow)
+        poiRect.set(x - r, y - r, x + r, y + r)
+        poiBg.color = PoiIcons.colors[type] ?: Color.GRAY
+        canvas.drawRoundRect(poiRect, r * 0.42f, r * 0.42f, poiBg)
+        poiEdge.strokeWidth = max(1.5f * d, r * 0.1f)
+        canvas.drawRoundRect(poiRect, r * 0.42f, r * 0.42f, poiEdge)
+        val shape = poiShape(type) ?: return
+        val k = 2f * r * 0.66f / 24f
+        val sv = canvas.save()
+        canvas.translate(x - 12f * k, y - 12f * k)
+        canvas.scale(k, k)
+        canvas.drawPath(shape, poiGlyph)
+        canvas.restoreToCount(sv)
+    }
     var showPoiTypes: Set<Int> = setOf(Poi.FUEL, Poi.PARKING, Poi.SERVICE, Poi.WEIGH, Poi.GARAGE, Poi.DEALER, Poi.FERRY, Poi.TRAIN)
 
     private val scaleDetector = ScaleGestureDetector(ctx, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -226,6 +244,7 @@ class MapView(ctx: Context) : View(ctx) {
         private set
     var planPts = FloatArray(0)
     var planEdgePt = IntArray(0)
+    var planLift = ByteArray(0)
     class Pin(val x: Float, val z: Float, val label: String, val color: Int)
     var pins: List<Pin> = emptyList()
     private val minZoom get() = if (planMode) 0.004f else 0.35f
@@ -236,7 +255,7 @@ class MapView(ctx: Context) : View(ctx) {
     }
 
     fun hidePlan() {
-        planMode = false; free = false; pins = emptyList(); planPts = FloatArray(0); planEdgePt = IntArray(0); userZoom = 1f
+        planMode = false; free = false; pins = emptyList(); planPts = FloatArray(0); planEdgePt = IntArray(0); planLift = ByteArray(0); userZoom = 1f
         invalidate()
     }
 
@@ -279,18 +298,28 @@ class MapView(ctx: Context) : View(ctx) {
     private val borderRed = Color.rgb(200, 40, 40)
     private val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
-    private val bandBufs = Array(20) { FloatArray(2048) }
-    private val bandCounts = IntArray(20)
+    /** Road segments per class and depth band, ready for drawLines. */
+    private class SegSet {
+        val bufs = Array(20) { FloatArray(2048) }
+        val counts = IntArray(20)
+        fun clear() = counts.fill(0)
+        fun add(k: Int, x0: Float, y0: Float, x1: Float, y1: Float) {
+            var buf = bufs[k]
+            val n = counts[k]
+            if (n + 4 > buf.size) { buf = buf.copyOf(buf.size * 2); bufs[k] = buf }
+            buf[n] = x0; buf[n + 1] = y0; buf[n + 2] = x1; buf[n + 3] = y1
+            counts[k] = n + 4
+        }
+    }
+    private val groundSet = SegSet()
+    private val deckSet = SegSet()
+    private val shadowSet = SegSet()
+    private val deckShadow = Color.argb(105, 6, 8, 14)
+    private val routeGhost = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; color = Color.argb(120, 36, 132, 255)
+    }
     private val routePaths = Array(5) { Path() }
     private val routeUsed = BooleanArray(5)
-
-    private fun addSeg(k: Int, x0: Float, y0: Float, x1: Float, y1: Float) {
-        var buf = bandBufs[k]
-        val n = bandCounts[k]
-        if (n + 4 > buf.size) { buf = buf.copyOf(buf.size * 2); bandBufs[k] = buf }
-        buf[n] = x0; buf[n + 1] = y0; buf[n + 2] = x1; buf[n + 3] = y1
-        bandCounts[k] = n + 4
-    }
 
     // ------------------------------------------------------------------------ drawing --
 
@@ -332,7 +361,9 @@ class MapView(ctx: Context) : View(ctx) {
         val zoomFactor = s / (d * 0.55f)
         val showLocal = zoomFactor > 0.3f
         val showJunction = zoomFactor > 0.45f
-        bandCounts.fill(0)
+        groundSet.clear(); deckSet.clear(); shadowSet.clear()
+        val hasLift = m.eHasLift.isNotEmpty()
+        val liftK = if (tilted) s * sin(tilt) else 0f   // screen px for one metre of height
         val drawRoads = !(planMode && zoomFactor < 0.06f) // zoomed far out while planning: just the route and the towns
         if (drawRoads) m.queryEdges(cx, cz, radius) { e ->
             val cls = m.eCls[e].toInt().coerceIn(0, 3)
@@ -340,15 +371,26 @@ class MapView(ctx: Context) : View(ctx) {
             val a = m.ePtStart[e]
             val b = min(m.ePtStart[e + 1], a + 255)
             if (b - a < 2) return@queryEdges
-            var lx = 0f; var ly = 0f; var ls = 1f
+            // roads on flyovers and bridges are drawn afterwards, raised and with a shadow, so the roads below pass underneath
+            val elev = hasLift && m.eHasLift[e]
+            var lx = 0f; var ly = 0f; var ls = 1f; var sx = 0f; var sy = 0f
             for (p in a until b) {
                 proj(m.ptX[p], m.ptZ[p])
+                var deckY = qy; var shx = qx; var shy = qy
+                if (elev) {
+                    val lf = 0.5f * (m.ptLift[p].toInt() and 0xFF)
+                    deckY = qy - lf * liftK * qs
+                    if (!tilted) { val o = min(12f * d, lf * s * 0.3f); shx = qx + o; shy = qy + o }
+                }
                 if (p > a) {
                     val sc = (ls + qs) / 2f
-                    if (!tilted) addSeg(cls * 5, lx, ly, qx, qy)
-                    else if (sc >= 0.28f) addSeg(cls * 5 + band(sc), lx, ly, qx, qy)
+                    if (!tilted || sc >= 0.28f) {
+                        val k = cls * 5 + (if (tilted) band(sc) else 0)
+                        if (!elev) groundSet.add(k, lx, ly, qx, qy)
+                        else { deckSet.add(k, lx, ly, qx, deckY); shadowSet.add(k, sx, sy, shx, shy) }
+                    }
                 }
-                lx = qx; ly = qy; ls = qs
+                lx = qx; ly = deckY; ls = qs; sx = shx; sy = shy
             }
         }
 
@@ -372,54 +414,70 @@ class MapView(ctx: Context) : View(ctx) {
             }
         }
         fun roadWidth(c: Int, bd: Int) = max(widthsM[c] * s, if (c == 2) 3.4f * d else 2.4f * d) * bandFactor[bd]
-        for (c in intArrayOf(3, 0, 1, 2)) for (bd in 0..4) {
-            val k = c * 5 + bd
-            if (bandCounts[k] == 0) continue
-            roadPaint.color = casings[c]
-            roadPaint.strokeWidth = roadWidth(c, bd) + 2.6f * d
-            canvas.drawLines(bandBufs[k], 0, bandCounts[k], roadPaint)
+        fun drawSegs(set: SegSet, casing: Boolean, shadow: Boolean = false) {
+            for (c in intArrayOf(3, 0, 1, 2)) for (bd in 0..4) {
+                val k = c * 5 + bd
+                if (set.counts[k] == 0) continue
+                roadPaint.color = if (shadow) deckShadow else if (casing) casings[c] else colors[c]
+                roadPaint.strokeWidth = roadWidth(c, bd) + (if (shadow) 5f * d else if (casing) 2.6f * d else 0f)
+                canvas.drawLines(set.bufs[k], 0, set.counts[k], roadPaint)
+            }
         }
-        for (c in intArrayOf(3, 0, 1, 2)) for (bd in 0..4) {
-            val k = c * 5 + bd
-            if (bandCounts[k] == 0) continue
-            roadPaint.color = colors[c]
-            roadPaint.strokeWidth = roadWidth(c, bd)
-            canvas.drawLines(bandBufs[k], 0, bandCounts[k], roadPaint)
-        }
+        drawSegs(groundSet, true); drawSegs(groundSet, false)
 
         // route
         val rp0 = if (planMode) planPts else routePts
         val re0 = if (planMode) planEdgePt else routeEdgePt
+        var rl = if (planMode) planLift else routeLift
+        if (rl.size != rp0.size / 2) rl = ByteArray(0)
+        var rFirst = 0; var rLast = 0; var routeLifted = false
+        val rw = max(10f * s, 6f * d)
         if (rp0.isNotEmpty() && re0.isNotEmpty()) {
             val total = rp0.size / 2
             val startEdge = max(0, routeIdx - 1)
-            val first = if (planMode) 0 else re0[min(startEdge, re0.size - 1)]
-            val last = if (planMode) total else min(total, first + 6000)
+            rFirst = if (planMode) 0 else re0[min(startEdge, re0.size - 1)]
+            rLast = if (planMode) total else min(total, rFirst + 6000)
+            if (rl.isNotEmpty()) for (p in rFirst until rLast) if (rl[p].toInt() != 0) { routeLifted = true; break }
+        }
+        // deck false: the route on the ground; deck true: the parts on flyovers / bridges, raised; ghost: the ground route again, faint
+        fun drawRoute(deck: Boolean, ghost: Boolean) {
+            if (rLast <= rFirst) return
             for (pth in routePaths) pth.reset()
             routeUsed.fill(false)
             var cur = -1; var lx = 0f; var ly = 0f; var ls = 1f
-            for (p in first until last) {
+            for (p in rFirst until rLast) {
                 proj(rp0[p * 2], rp0[p * 2 + 1])
-                if (p > first) {
+                val y = if (deck && rl.isNotEmpty()) qy - 0.5f * (rl[p].toInt() and 0xFF) * liftK * qs else qy
+                if (p > rFirst) {
+                    val segUp = rl.isNotEmpty() && (rl[p].toInt() != 0 || rl[p - 1].toInt() != 0)
                     val sc = (ls + qs) / 2f
-                    if (sc < 0.28f) cur = -1
+                    if (segUp != deck || sc < 0.28f) cur = -1
                     else {
                         val bd = if (tilted) band(sc) else 0
                         if (bd != cur) { routePaths[bd].moveTo(lx, ly); cur = bd; routeUsed[bd] = true }
-                        routePaths[bd].lineTo(qx, qy)
+                        routePaths[bd].lineTo(qx, y)
                     }
                 }
-                lx = qx; ly = qy; ls = qs
+                lx = qx; ly = y; ls = qs
             }
-            val w = max(10f * s, 6f * d)
-            for (bd in 0..4) if (routeUsed[bd]) { routeCasing.strokeWidth = (w + 5f * d) * bandFactor[bd]; canvas.drawPath(routePaths[bd], routeCasing) }
-            for (bd in 0..4) if (routeUsed[bd]) { routePaint.strokeWidth = w * bandFactor[bd]; canvas.drawPath(routePaths[bd], routePaint) }
+            if (!ghost) for (bd in 0..4) if (routeUsed[bd]) { routeCasing.strokeWidth = (rw + 5f * d) * bandFactor[bd]; canvas.drawPath(routePaths[bd], routeCasing) }
+            for (bd in 0..4) if (routeUsed[bd]) {
+                val pt = if (ghost) routeGhost else routePaint
+                pt.strokeWidth = rw * bandFactor[bd]
+                canvas.drawPath(routePaths[bd], pt)
+            }
+        }
+        drawRoute(false, false)
+        if (hasLift) {
+            drawSegs(shadowSet, false, shadow = true)
+            drawSegs(deckSet, true); drawSegs(deckSet, false)
+            if (routeLifted) { drawRoute(true, false); drawRoute(false, true) } // the route below shows faintly through the deck above it
         }
 
         fun visible(mx: Float, my: Float) = !((tilted && qs < 0.3f) || qx < -mx || qx > width + mx || qy < -my || qy > height + my)
 
         // big area (city) names
-        if (zoomFactor < 1.8f) {
+        if (true) { // area (city) names stay on at every zoom level
             val size = (26f * Math.pow(zoomFactor.toDouble(), 0.35).toFloat()).coerceIn(if (planMode) 11f else 20f, 34f) * d
             cityText.textSize = size; cityShadow.textSize = size
             for (c in m.cities) {
@@ -517,7 +575,6 @@ class MapView(ctx: Context) : View(ctx) {
         // points of interest (fuel, rest areas, service, garages, dealers, weigh stations, ferries ...)
         if (zoomFactor > 0.3f) {
             val r = if (zoomFactor > 0.8f) 24f * d else 18f * d
-            poiTxt.textSize = r * 1.15f
             for (p in m.pois) {
                 if (p.type !in showPoiTypes) continue
                 val wx = p.x - cx; val wz = p.z - cz
@@ -525,11 +582,7 @@ class MapView(ctx: Context) : View(ctx) {
                 proj(p.x, p.z)
                 if (!visible(r, r)) continue
                 val x = qx; val y = qy
-                scaled(x, y, fscale(qs)) {
-                    poiBg.color = poiColors[p.type] ?: Color.GRAY
-                    canvas.drawCircle(x, y, r, poiBg)
-                    canvas.drawText(poiLetters[p.type] ?: "?", x, y + r * 0.4f, poiTxt)
-                }
+                scaled(x, y, fscale(qs)) { drawPoi(canvas, p.type, x, y, r) }
             }
         }
 

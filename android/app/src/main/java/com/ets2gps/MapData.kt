@@ -83,6 +83,9 @@ class MapData(
     val areas: List<MapArea> = emptyList(),
     val borders: List<BorderPoint> = emptyList(),
     val cityCountry: Map<String, String> = emptyMap(),
+    /** Per road point: height above the road it crosses, in 0.5 m units (flyovers, bridges; file version 10). */
+    val ptLift: ByteArray = ByteArray(0),
+    val eHasLift: BooleanArray = BooleanArray(0),
 ) {
     val nodeCount get() = nodeX.size
     val edgeCount get() = eFrom.size
@@ -183,6 +186,12 @@ class MapData(
         val e = de shr 1
         return if (de and 1 == 0) ptX[ePtStart[e] + i] else ptX[ePtStart[e + 1] - 1 - i]
     }
+    /** Lift (metres) of point i of a directed edge. */
+    fun deLift(de: Int, i: Int): Float {
+        if (ptLift.isEmpty()) return 0f
+        val e = de shr 1
+        return 0.5f * ((if (de and 1 == 0) ptLift[ePtStart[e] + i] else ptLift[ePtStart[e + 1] - 1 - i]).toInt() and 0xFF)
+    }
     fun deZ(de: Int, i: Int): Float {
         val e = de shr 1
         return if (de and 1 == 0) ptZ[ePtStart[e] + i] else ptZ[ePtStart[e + 1] - 1 - i]
@@ -203,7 +212,7 @@ class MapData(
             b.get(magic)
             require(String(magic) == "ETSM") { "not an ETS2 GPS map file" }
             val ver = b.short.toInt()
-            require(ver in 2..9) { "unsupported map version $ver (update the app or rebuild the map)" }
+            require(ver in 2..10) { "unsupported map version $ver (update the app or rebuild the map)" }
             b.short
             val minX = b.float; val minZ = b.float; val maxX = b.float; val maxZ = b.float
 
@@ -323,10 +332,20 @@ class MapData(
                     }
                 }
             }
+            var ptLift = ByteArray(0); var eHasLift = BooleanArray(0)
+            if (ver >= 10 && b.remaining() >= 4) {
+                ptLift = ByteArray(total); eHasLift = BooleanArray(en)
+                val lc = b.int
+                for (i in 0 until lc) {
+                    val e = b.int
+                    val a = ePtStart[e]; val cnt = ePtStart[e + 1] - a
+                    b.get(ptLift, a, cnt); eHasLift[e] = true
+                }
+            }
             return MapData(
                 minX, minZ, maxX, maxZ, nodeX, nodeZ, eFrom, eTo, eFlags, eCls, eGrade, eSpeed, eWidth, eJid,
                 ePtStart, ptX, ptZ, eLen, junctionNodes, roundabouts, cities.sortedBy { it.key }, companies, pois, laneN, laneMask,
-                companyNames, roadLabels, areas, borders, cityCountry,
+                companyNames, roadLabels, areas, borders, cityCountry, ptLift, eHasLift,
             )
         }
 

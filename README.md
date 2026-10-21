@@ -56,7 +56,7 @@ Pinch / +/- to zoom, double-tap resets zoom.
 - **Saved trips**: after planning a route (and any waypoints) tap **Trips > Save current trip** and give it a name. Saved trips keep the destination, waypoints and route type; tap one later to start it from wherever you are, rename it or delete it.
 - **Waypoints**: once a route exists, search a city and choose *Add as waypoint*, long-press the map and choose *Add as waypoint*, or open **Stops** (Search > Stops) to add, remove, reorder or clear them. Waypoints show as numbered blue markers; the app guides you to each in turn ("Waypoint reached") and the distance/ETA cover the whole trip.
 * **POIs** (from the game's own prefab spawn points and map overlays): fuel stations, service centres, rest areas /
-  parking, weigh stations, garages, truck dealers. Shown as F / P / S / W badges on the map; the **POI** button lists the
+  parking, weigh stations, garages, truck dealers. Shown as pictogram badges on the map; the **POI** button lists the
   nearest ones (things behind you rank lower) and routes there, then resumes your original destination on arrival.
 * **Voice on your PC headset**: gear -> "Speak on the PC" (or "both"). The app sends each prompt to the companion,
   which speaks it with Windows' own voices (default: Microsoft Hazel/Zira) on the PC's default playback device. If your
@@ -88,6 +88,11 @@ Pinch / +/- to zoom, double-tap resets zoom.
 * **Ferries / trains** are routed using the game's connection list and sailing times.
 * **Road names**: ETS2's map files do not store road names or numbers (only sparse text on sign boards), so the app
   names the next town instead.
+* **Flyovers and bridges**: the map now holds road heights. A road on a flyover, bridge or stacked interchange is drawn on top of the roads it crosses, with a shadow, and is raised in the 3D view while you drive; your route goes visibly over or under a crossing (the part below shows faintly through the deck). The map has to be rebuilt once (the Windows app does it itself when the game and the TruckSim server are running; on Android download the map again).
+* **Pictogram badges**: fuel (lime green), rest areas, service centres, weigh stations, garages, truck dealers, ferries and car trains are drawn as a coloured badge with a picture instead of a letter.
+* **Left menu auto-hides**: after a few seconds without being touched the menu fades away and a thin grip stays on the left edge; touch the grip to bring it back.
+* **Real or Sim distances**: Settings > *Real distances* switches turn distances, lane guidance and trip lengths between the game's scaled (Sim) distances and real metres. The scale itself (default 19) is unchanged.
+* **Cruise control follows the speed limit** (on by default; menu button *Cruise auto / Cruise off*): while cruise control is on, the Windows app taps the game's cruise faster / slower keys (Numpad + and Numpad -, the game's defaults) to keep it on the current speed limit. It only presses keys while Euro Truck Simulator 2 is the window in front. The web and Android buttons switch it on or off on the PC, so they need the Windows app running.
 
 ## Web version (iPad, iPhone or any browser)
 

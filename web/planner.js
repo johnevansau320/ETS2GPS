@@ -122,13 +122,13 @@ function computePlan() {
   if (!edges.length) return 'The start and the destination are the same place';
   let total = 0;
   for (const de of edges) total += m.deCount(de);
-  const line = new Float32Array(total * 2), starts = new Int32Array(edges.length);
+  const line = new Float32Array(total * 2), lift = new Uint8Array(total), starts = new Int32Array(edges.length);
   let p = 0;
   edges.forEach((de, i) => {
     starts[i] = p;
-    for (let k = 0; k < m.deCount(de); k++) { line[p * 2] = m.deX(de, k); line[p * 2 + 1] = m.deZ(de, k); p++; }
+    for (let k = 0; k < m.deCount(de); k++) { line[p * 2] = m.deX(de, k); line[p * 2 + 1] = m.deZ(de, k); lift[p] = Math.round(m.deLift(de, k) * 2); p++; }
   });
-  mapView.planPts = line; mapView.planEdgePt = starts;
+  mapView.planPts = line; mapView.planLift = lift; mapView.planEdgePt = starts;
   plan.len = len; plan.time = time;
   mapView.pins = [{ x: start.x, z: start.z, label: 'S', color: 'rgb(30,150,80)' }]
     .concat(plan.stops.map((s, i) => ({ x: s.x, z: s.z, label: String(i + 1), color: 'rgb(25,118,210)' })))

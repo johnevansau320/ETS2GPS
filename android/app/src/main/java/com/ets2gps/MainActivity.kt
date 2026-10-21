@@ -14,6 +14,7 @@ import android.text.InputType
 import android.text.TextWatcher
 import android.view.Choreographer
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -80,6 +81,8 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var voice: Voice
     private lateinit var voiceBtn: Button
+    private lateinit var cruiseBtn: Button
+    private var cruiseOn = false
     private lateinit var modeBtn: Button
     private var avoidFerries: Boolean
         get() = prefs.getBoolean("avoid_ferries", false)
@@ -134,9 +137,15 @@ class MainActivity : Activity() {
     private var host: String
         get() = cleanHost(prefs.getString("host", "") ?: "")
         set(v) { prefs.edit().putString("host", cleanHost(v)).apply() }
-    private var distScale: Float
+    /** The game (Sim) scale: map metres x this are the distances the game shows. */
+    private var simScale: Float
         get() = prefs.getFloat("scale", 19f)
         set(v) { prefs.edit().putFloat("scale", v).apply() }
+    private var realDist: Boolean
+        get() = prefs.getBoolean("real", false)
+        set(v) { prefs.edit().putBoolean("real", v).apply() }
+    /** What map metres are multiplied by for display: 1 = real distances, otherwise the Sim scale. */
+    private val distScale: Float get() = if (realDist) 1f else simScale
 
     /** Accepts "192.168.1.5", "http://192.168.1.5:31377/", etc. and returns just the host name / IP. */
     private fun cleanHost(v: String): String =
@@ -357,6 +366,8 @@ class MainActivity : Activity() {
         updateModeButton()
         voiceBtn = button("Voice on") { toggleVoice() }
         menuButton(voiceBtn)
+        cruiseBtn = button("Cruise\noff") { cruiseCall(!cruiseOn) }
+        menuButton(cruiseBtn)
         menuButton(button("POI") { showPoiPicker() })
         menuButton(button("Job") { routeToJob() })
         menuButton(button("Stop") { cancelRoute() })
@@ -369,8 +380,57 @@ class MainActivity : Activity() {
         root.addView(menuScroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START).apply {
             leftMargin = dp(10); topMargin = dp(112); bottomMargin = dp(84)
         })
+        // auto-hide: the menu fades away after a few seconds without being touched; the grip on the left edge brings it back
+        val gripBar = View(this).apply {
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.argb(150, 255, 255, 255)); cornerRadius = dp(3).toFloat() }
+        }
+        val menuGrip = FrameLayout(this).apply {
+            visibility = View.GONE
+            addView(gripBar, FrameLayout.LayoutParams(dp(5), dp(90), Gravity.CENTER_VERTICAL).apply { leftMargin = dp(3) })
+            setOnTouchListener { _, ev -> if (ev.actionMasked == MotionEvent.ACTION_DOWN) showMenu(); true }
+        }
+        root.addView(menuGrip, FrameLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START).apply { topMargin = dp(112); bottomMargin = dp(84) })
+        menuView = menuScroll; menuGripView = menuGrip
+        menuTouched = SystemClock.elapsedRealtime()
+        ui.postDelayed(menuTick, 500)
+        cruiseCall(null)
 
         setContentView(root)
+    }
+
+    private var menuView: View? = null
+    private var menuGripView: View? = null
+    private var menuShown = true
+    private var menuTouched = 0L
+    private val menuTick = object : Runnable {
+        override fun run() {
+            if (menuShown && SystemClock.elapsedRealtime() - menuTouched > 4500) hideMenu()
+            ui.postDelayed(this, 500)
+        }
+    }
+
+    private fun showMenu() {
+        menuTouched = SystemClock.elapsedRealtime()
+        if (menuShown) return
+        menuShown = true
+        menuGripView?.visibility = View.GONE
+        menuView?.let { it.visibility = View.VISIBLE; it.animate().alpha(1f).setDuration(220).start() }
+    }
+
+    private fun hideMenu() {
+        menuShown = false
+        menuGripView?.visibility = View.VISIBLE
+        menuView?.let { v -> v.animate().alpha(0f).setDuration(220).withEndAction { if (!menuShown) v.visibility = View.INVISIBLE }.start() }
+    }
+
+    /** Any touch on the menu keeps it up. */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        val v = menuView
+        if (v != null && menuShown) {
+            val r = android.graphics.Rect()
+            if (v.getGlobalVisibleRect(r) && r.contains(ev.rawX.toInt(), ev.rawY.toInt())) menuTouched = SystemClock.elapsedRealtime()
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     private fun updateModeButton() {
@@ -389,6 +449,29 @@ class MainActivity : Activity() {
     private fun rerouteForModeChange() {
         if (hasDest && nav?.active == true && !routing.get()) {
             computeRoute(destX, destZ, destName, announce = false, reroute = true)
+        }
+    }
+
+    private fun updateCruiseButton() { cruiseBtn.text = if (cruiseOn) "Cruise\nauto" else "Cruise\noff" }
+
+    /** Cruise control follows the speed limit: the Windows app on the PC presses the game's cruise keys; this switches it on / off (on = null just reads the state). */
+    private fun cruiseCall(on: Boolean?) {
+        val h = host
+        if (h.isEmpty()) { if (on != null) toast("Set the PC address in settings first"); return }
+        laneNet.execute {
+            try {
+                val c = java.net.URL("http://$h:31378/cruise" + (if (on == null) "" else "?on=${if (on) 1 else 0}")).openConnection() as java.net.HttpURLConnection
+                c.connectTimeout = 1500; c.readTimeout = 1500
+                val txt = c.inputStream.bufferedReader().use { it.readText() }
+                c.disconnect()
+                val state = txt.contains("\"on\":true")
+                ui.post {
+                    cruiseOn = state; updateCruiseButton()
+                    if (on != null) toast(if (state) "Cruise control will follow the speed limit while the game is in front" else "Cruise control stays where you set it")
+                }
+            } catch (_: Exception) {
+                ui.post { if (on != null) toast("Needs the ETS2 GPS Windows app on the PC (it presses the cruise keys)") }
+            }
         }
     }
 
@@ -598,7 +681,7 @@ class MainActivity : Activity() {
         val totM = st.remainingM + afterM
         val totS = st.remainingS + afterS
         routeRemainingM = totM
-        if (!laneHidden && st.lanes != null && st.lanesDistM * distScale < LANE_SHOW_M) setLaneUi(st.lanes, n.shortDistance(st.lanesDistM)) else setLaneUi(null)
+        if (!laneHidden && st.lanes != null && st.lanesDistM * simScale < LANE_SHOW_M) setLaneUi(st.lanes, n.shortDistance(st.lanesDistM)) else setLaneUi(null)
         if (next != null) banner.setManeuver(next, n.shortDistance(st.distToNextM), n.instruction(next).replaceFirstChar { it.uppercase() } + (next.towards?.let { " towards $it" } ?: ""), st.following)
         updatePace(n)
         val realMin = totS / paceRatio / 60f // real-world minutes at your actual pace
@@ -723,12 +806,13 @@ class MainActivity : Activity() {
                 var total = 0
                 for (de in res.edges) total += m.deCount(de)
                 val pts = FloatArray(total * 2)
+                val lift = ByteArray(total)
                 val starts = IntArray(res.edges.size)
                 var p = 0
                 for ((i, de) in res.edges.withIndex()) {
                     starts[i] = p
                     for (k in 0 until m.deCount(de)) {
-                        pts[p * 2] = m.deX(de, k); pts[p * 2 + 1] = m.deZ(de, k); p++
+                        pts[p * 2] = m.deX(de, k); pts[p * 2 + 1] = m.deZ(de, k); lift[p] = (m.deLift(de, k) * 2).toInt().toByte(); p++
                     }
                 }
                 ui.post {
@@ -736,7 +820,7 @@ class MainActivity : Activity() {
                     n.arriveWord = if (legIsStop) "your waypoint" else "your destination"
                     afterM = am; afterS = asec
                     n.setRoute(res, remaining)
-                    mapView.routePts = pts; mapView.routeEdgePt = starts; mapView.routeIdx = 0
+                    mapView.routePts = pts; mapView.routeLift = lift; mapView.routeEdgePt = starts; mapView.routeIdx = 0
                     banner.setMessage(null)
                     if (announce) {
                         voice.say(if (legIsStop) "Route to $tname, the first of ${waypoints.size + 1} stops. ${n.spokenDistance(res.lengthM)}. ${routeMode.label} routing." else "Route to $name. ${n.spokenDistance(res.lengthM)}. ${routeMode.label} routing.")
@@ -1606,7 +1690,7 @@ class MainActivity : Activity() {
             ui.post {
                 if (out.error == null) {
                     plan.lengthM = out.lengthM; plan.timeS = out.timeS
-                    mapView.planPts = out.pts; mapView.planEdgePt = out.starts
+                    mapView.planPts = out.pts; mapView.planLift = out.lift; mapView.planEdgePt = out.starts
                     val pins = ArrayList<MapView.Pin>()
                     pins.add(MapView.Pin(start!!.x, start.z, "S", Color.rgb(30, 150, 80)))
                     plan.stops.forEachIndexed { i, s -> pins.add(MapView.Pin(s.x, s.z, "${i + 1}", Color.rgb(25, 118, 210))) }
@@ -1850,10 +1934,11 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
         val scaleEdit = EditText(this).apply {
-            hint = "Distance scale (game shows map x19)"
-            setText(distScale.toString()); setSingleLine()
+            hint = "Sim distance scale (game shows map x19)"
+            setText(simScale.toString()); setSingleLine()
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         }
+        val realBox = CheckBox(this).apply { text = "Real distances (turns, lane guidance, route length). Off = Sim distances like the game shows"; isChecked = realDist }
         val voiceBox = CheckBox(this).apply { text = "Voice guidance"; isChecked = voice.enabled }
         val help = TextView(this).apply {
             text = "Telemetry comes from the TruckSim GPS server (port 31377). The map comes from the " +
@@ -1887,11 +1972,13 @@ class MainActivity : Activity() {
         val ferryBox = CheckBox(this).apply { text = "Avoid ferries and car trains (some places may become unreachable)"; isChecked = avoidFerries }
         box.addView(ferryBox)
         box.addView(button("Clear avoided roads (${avoidPoints.size})") { clearAvoid() })
-        box.addView(hostEdit); box.addView(scaleEdit); box.addView(voiceBox); box.addView(outGroup); box.addView(testBtn); box.addView(help)
+        box.addView(hostEdit); box.addView(realBox); box.addView(scaleEdit); box.addView(voiceBox); box.addView(outGroup); box.addView(testBtn); box.addView(help)
         fun save() {
             host = hostEdit.text.toString()
             val sc = scaleEdit.text.toString().toFloatOrNull()
-            if (sc != null && sc > 0f) { distScale = sc; nav?.distScale = sc }
+            if (sc != null && sc > 0f) simScale = sc
+            realDist = realBox.isChecked
+            nav?.distScale = distScale
             voice.enabled = voiceBox.isChecked
             val ferryChanged = ferryBox.isChecked != avoidFerries
             if (ferryChanged) avoidFerries = ferryBox.isChecked
