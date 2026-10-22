@@ -499,7 +499,7 @@ class MapView(ctx: Context) : View(ctx) {
                 val wx = bp.x - cx; val wz = bp.z - cz
                 if (wx > radius || wx < -radius || wz > radius || wz < -radius) continue
                 proj(bp.x, bp.z)
-                if (!visible(40f * d, 40f * d)) continue
+                if (!visible(140f * d, 90f * d)) continue
                 val x = qx; val y = qy
                 if (bp.kind == 0) {
                     if (zoomFactor < 0.6f) continue
@@ -517,10 +517,19 @@ class MapView(ctx: Context) : View(ctx) {
                     }
                 } else {
                     val flag = assets?.flag(bp.cc) ?: continue
+                    val country = CountryNames.of(bp.cc)
                     scaled(x, y, fscale(qs)) {
-                        canvas.drawCircle(x, y, 21f * d, whitePaint)
-                        rect.set(x - 19f * d, y - 19f * d, x + 19f * d, y + 19f * d)
+                        // the flag (2x) with the name of the country being entered right under it
+                        canvas.drawCircle(x, y, 42f * d, whitePaint)
+                        rect.set(x - 38f * d, y - 38f * d, x + 38f * d, y + 38f * d)
                         canvas.drawBitmap(flag, null, rect, bmpPaint)
+                        val sv = pillText.textSize
+                        pillText.textSize = 22f * d
+                        val hw = pillText.measureText(country) / 2 + 8f * d; val hgt = 14f * d
+                        rect.set(x - hw, y + 36f * d, x + hw, y + 36f * d + 2 * hgt)
+                        canvas.drawRoundRect(rect, 6f * d, 6f * d, shieldPaint)
+                        canvas.drawText(country, x, y + 36f * d + hgt + 7.5f * d, pillText)
+                        pillText.textSize = sv
                     }
                 }
             }

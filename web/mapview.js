@@ -334,7 +334,7 @@ class MapView {
         const dx = bd.x - cx, dz = bd.z - cz;
         if (dx > radius || dx < -radius || dz > radius || dz < -radius) continue;
         const q = proj(bd.x, bd.z);
-        if (!visible(q, 40, 40)) continue;
+        if (!visible(q, 140, 90)) continue;
         if (bd.kind === 0) {
           if (zoomFactor < 0.6) continue;
           at(q[0], q[1], fs(q[2]), () => pill('BORDER', q[0], q[1], '#fff', 'rgb(200,40,40)', 'rgb(200,40,40)', 12, 8));
@@ -342,8 +342,10 @@ class MapView {
           const img = this.assets && this.assets.flag(bd.cc);
           if (!img) continue;
           at(q[0], q[1], fs(q[2]), () => {
-            c.fillStyle = '#fff'; c.beginPath(); c.arc(q[0], q[1], 21, 0, Math.PI * 2); c.fill();
-            c.drawImage(img, q[0] - 19, q[1] - 19, 38, 38);
+            // the flag (2x) with the name of the country being entered right under it
+            c.fillStyle = '#fff'; c.beginPath(); c.arc(q[0], q[1], 42, 0, Math.PI * 2); c.fill();
+            c.drawImage(img, q[0] - 38, q[1] - 38, 76, 76);
+            pill(countryName(bd.cc), q[0], q[1] + 50, 'rgba(250,250,252,0.95)', '#fff', 'rgb(30,36,48)', 22, 8);
           });
         }
       }
