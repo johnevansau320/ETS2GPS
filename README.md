@@ -1,4 +1,4 @@
-﻿# ETS2 GPS
+# ETS2 GPS
 
 Turn-by-turn GPS for Euro Truck Simulator 2 on an Android phone, using the **map you actually have installed**
 (base game, DLC and map mods such as ProMods), with voice prompts and maneuver graphics on a heading-up road map.
@@ -89,6 +89,7 @@ Pinch / +/- to zoom, double-tap resets zoom.
 * **Road names**: ETS2's map files do not store road names or numbers (only sparse text on sign boards), so the app
   names the next town instead.
 * **Flyovers and bridges**: the map now holds road heights. A road on a flyover, bridge or stacked interchange is drawn on top of the roads it crosses, with a shadow, and is raised in the 3D view while you drive; your route goes visibly over or under a crossing (the part below shows faintly through the deck). The map has to be rebuilt once (the Windows app does it itself when the game and the TruckSim server are running; on Android download the map again).
+* **Border flags with the country name**: the flag of the country you are entering is drawn large with the country's name right under it.
 * **Pictogram badges**: fuel (lime green), rest areas, service centres, weigh stations, garages, truck dealers, ferries and car trains are drawn as a coloured badge with a picture instead of a letter.
 * **Left menu auto-hides**: after a few seconds without being touched the menu fades away and a thin grip stays on the left edge; touch the grip to bring it back.
 * **Real or Sim distances**: Settings > *Real distances* switches turn distances, lane guidance and trip lengths between the game's scaled (Sim) distances and real metres. The scale itself (default 19) is unchanged.
