@@ -718,7 +718,8 @@ function updateTrip() {
   const j = s.job, dt = s.detail, n = nav;
   const amber = 'rgb(255,190,90)', red = 'rgb(255,120,110)', green = 'rgb(60,220,130)';
   const routingNow = n && n.active && routeRemainingM >= 0;
-  const remGameKm = routingNow ? routeRemainingM * distScale / 1000 : (dt ? dt.navDistanceKm : 0);
+  // the Job Info screen always counts in game kilometres (planned distance, range and consumption come from the game), whatever the Real / Sim setting
+  const remGameKm = routingNow ? routeRemainingM * simScale / 1000 : (dt ? dt.navDistanceKm : 0);
   const realMin = routingNow && routeEtaGameMin >= 0 ? routeEtaGameMin / TIME_SCALE : -1;
   const simMin = routingNow ? routeEtaGameMin : (s.navEtaMin >= 0 ? s.navEtaMin : -1);
   const planned = j ? j.plannedKm : 0;
@@ -744,7 +745,7 @@ function updateTrip() {
   // route
   let rc = '<h3>ROUTE</h3>' + row('Destination', esc(hasDest ? destName : 'none'));
   if (routingNow) {
-    rc += row('Remaining', n.shortDistance(routeRemainingM)) + row('Real time left', formatDuration(realMin)) + row('Sim time left', formatDuration(simMin)) + row('Arrive (sim clock)', clockText(s.gameTimeMin + simMin));
+    rc += row('Remaining', Math.round(remGameKm).toLocaleString('en') + ' km') + row('Real time left', formatDuration(realMin)) + row('Sim time left', formatDuration(simMin)) + row('Arrive (sim clock)', clockText(s.gameTimeMin + simMin));
     if (lastNextText) rc += row('Next', esc(lastNextText.charAt(0).toUpperCase() + lastNextText.slice(1)));
   } else { rc += row('Game route left', Math.round(remGameKm) + ' km'); if (simMin >= 0) rc += row('Game ETA (sim)', formatDuration(simMin)); }
   rc += row('Route type', routeMode.label);
@@ -762,7 +763,7 @@ function updateTrip() {
     } else html += '<div class="card"><h3>TRAILER &amp; CARGO</h3>' + row('Trailer', 'none attached') + '</div>';
   }
   // this trip
-  const driven = Math.max(0, motion.travelled - tripBase) * distScale / 1000, drivenM = Math.max(0, motion.travelled - tripBase);
+  const driven = Math.max(0, motion.travelled - tripBase) * simScale / 1000, drivenM = Math.max(0, motion.travelled - tripBase);
   const avg = tripDriveMs > 1000 ? drivenM / (tripDriveMs / 1000) * 3.6 : 0;
   let tc = '<h3>THIS TRIP</h3>' + row('Distance driven', Math.round(driven) + ' km') + row('Driving time (real)', formatDuration(tripDriveMs / 60000)) + row('Driving time (sim)', formatDuration(tripDriveMs / 60000 * TIME_SCALE)) +
     row('Average speed', Math.round(avg) + ' km/h') + row('Top speed', Math.round(tripMaxKmh) + ' km/h') + row('Climbed / descended', Math.round(elev.ascent()) + ' / ' + Math.round(elev.descent()) + ' m') + row('Fuel used', Math.round(tripFuelUsed) + ' L');

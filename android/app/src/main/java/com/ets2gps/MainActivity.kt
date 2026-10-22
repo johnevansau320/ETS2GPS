@@ -1000,7 +1000,8 @@ class MainActivity : Activity() {
         val amber = Color.rgb(255, 190, 90)
         val red = Color.rgb(255, 120, 110)
         val routing = n?.active == true && routeRemainingM >= 0f
-        val remGameKm = if (routing) routeRemainingM * distScale / 1000f else (dt?.navDistanceKm ?: 0f)
+        // the Job Info screen always counts in game kilometres (planned distance, range and consumption come from the game), whatever the Real / Sim setting
+        val remGameKm = if (routing) routeRemainingM * simScale / 1000f else (dt?.navDistanceKm ?: 0f)
         val realMin = if (routing && routeEtaGameMin >= 0f) routeEtaGameMin / TIME_SCALE else -1f
         val simMin = if (routing) routeEtaGameMin else (if (s.navEtaMin >= 0f) s.navEtaMin else -1f)
 
@@ -1035,7 +1036,7 @@ class MainActivity : Activity() {
         val rr = ArrayList<TripRow>()
         rr.add(TripRow("Destination", if (hasDest) destName else "none"))
         if (routing && n != null) {
-            rr.add(TripRow("Remaining", n.shortDistance(routeRemainingM)))
+            rr.add(TripRow("Remaining", "%,.0f km".format(remGameKm)))
             rr.add(TripRow("Real time left", formatDuration(realMin)))
             rr.add(TripRow("Sim time left", formatDuration(simMin)))
             rr.add(TripRow("Arrive (sim clock)", clockText(s.gameTimeMin + simMin)))
@@ -1076,7 +1077,7 @@ class MainActivity : Activity() {
         }
 
         // THIS TRIP
-        val drivenGameKm = max(0f, motion.travelled - tripBase) * distScale / 1000f
+        val drivenGameKm = max(0f, motion.travelled - tripBase) * simScale / 1000f
         val driveHours = tripDriveMs / 3_600_000f
         val avg = if (driveHours > 0.001f) (motion.travelled - tripBase) / (tripDriveMs / 1000f) * 3.6f else 0f
         val sr = ArrayList<TripRow>()
