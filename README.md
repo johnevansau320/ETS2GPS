@@ -52,6 +52,8 @@ Pinch / +/- to zoom, double-tap resets zoom.
 
 ## Extras
 
+- **Job routes lead you to the gate** (v1.10.0): when the mapped route ends short of the company the app keeps the route on the map, says once to follow the flag to the drop-off point and shows the game's remaining distance; a chequered flag marks the destination. *Recalculating* is spoken once per time off the route, and lane guidance can be switched off in Settings (Windows and Android).
+
 - **Lane guidance**: while you drive the app shows, for the next junction that has lane data (turns, exits and straight-on junctions where some lanes would leave your route), one arrow per lane of your road (left to right) under the green bar. Green lanes are the ones to be in for your turn, white lanes show where they go, and a faint second arrow marks a lane that serves two directions. The lane data comes from the game's junction prefabs, so the map has to be rebuilt once (the companion does this automatically after you update it) and re-downloaded in the app.
 - **Saved trips**: after planning a route (and any waypoints) tap **Trips > Save current trip** and give it a name. Saved trips keep the destination, waypoints and route type; tap one later to start it from wherever you are, rename it or delete it.
 - **Waypoints**: once a route exists, search a city and choose *Add as waypoint*, long-press the map and choose *Add as waypoint*, or open **Stops** (Search > Stops) to add, remove, reorder or clear them. Waypoints show as numbered blue markers; the app guides you to each in turn ("Waypoint reached") and the distance/ETA cover the whole trip.

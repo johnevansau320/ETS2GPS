@@ -110,6 +110,8 @@ class MainActivity : Activity() {
     private var lastReroute = 0L
     private var downloading = false
     private var destIsPoi = false
+    private var offAnnounced = false
+    private var destIsJob = false; private var endHinted = false; private var stillSinceMs = 0L
     private var resumeSet = false
     private var resumeX = 0f
     private var resumeZ = 0f
@@ -128,6 +130,9 @@ class MainActivity : Activity() {
     private val resumeStops = ArrayList<Stop>() // waypoints set aside while a POI detour is active
     private var startLabel = "Start" // where the current plan began (for naming saved trips)
     private var laneHidden = false // the Trip screen is open
+    private var showLanes: Boolean // the lane guidance panel can be switched off in Settings
+        get() = prefs.getBoolean("lanes", true)
+        set(v) { prefs.edit().putBoolean("lanes", v).apply() }
     private var afterM = 0f // distance / time of the legs after the one being driven
     private var afterS = 0f
     private var paceRatio = 1f // actual speed / speed the router assumed, smoothed (~90 s)
@@ -668,7 +673,10 @@ class MainActivity : Activity() {
             computeRoute(resumeX, resumeZ, resumeName, announce = false, keepStops = true)
             return
         }
+        if (st.arrived && destIsJob && holdAtRouteEnd(n)) return
         if (st.arrived) {
+            if (destIsJob) voice.say("You have arrived at $destName")
+            mapView.flagOn = false
             infoText.text = "Arrived at $destName"
             banner.setMessage("You have arrived")
             n.clear()
@@ -691,7 +699,28 @@ class MainActivity : Activity() {
         val label = if (waypoints.isEmpty()) destName else "$destName (via ${waypoints.size} stop${if (waypoints.size > 1) "s" else ""}, next: ${waypoints[0].name})"
         infoText.text = "$label\n${n.shortDistance(totM)} · Real ${formatDuration(realMin)} · Sim ${formatDuration(gameMin)}" +
             (if (clock.isNotEmpty()) " · Arrive $clock" else "")
+        if (!st.offRoute) offAnnounced = false
         if (st.offRoute) rerouteIfNeeded()
+    }
+
+    /**
+     * The mapped road network often ends well short of a company's gate (the game's own route goes on to the gate). While the game still reports a long way
+     * to go for the job, keep the route and the flag on the map and tell the driver to carry on, instead of declaring the arrival at the end of the mapped route.
+     */
+    private fun holdAtRouteEnd(n: Navigator): Boolean {
+        val t = truck ?: return false
+        if (t.destCityId.isEmpty()) return false // job delivered or cancelled: arrived
+        val navKm = t.detail?.navDistanceKm ?: 0f
+        val gameM = if (navKm > 0.001f) navKm * 1000f else Math.hypot((motion.x - destX).toDouble(), (motion.z - destZ).toDouble()).toFloat() * simScale
+        val now = SystemClock.elapsedRealtime()
+        if (motion.speedMps < 0.5f) { if (stillSinceMs == 0L) stillSinceMs = now } else stillSinceMs = 0L
+        if (gameM < 150f || (stillSinceMs != 0L && now - stillSinceMs > 25000L)) return false
+        if (!endHinted) { endHinted = true; voice.say("The mapped route ends here. Follow the flag to the drop off point.") }
+        banner.setMessage("Mapped route ends here - follow the flag")
+        setLaneUi(null)
+        infoText.text = "$destName\nTo the destination: about ${n.shortDistance(gameM / max(1f, simScale))} (the game's route)"
+        offAnnounced = false
+        return true
     }
 
     /** Learns how fast the truck really travels compared with the router's speeds, so the ETA follows reality. */
@@ -734,12 +763,12 @@ class MainActivity : Activity() {
         val now = SystemClock.elapsedRealtime()
         if (!hasDest || routing.get() || now - lastReroute < 4000) return
         lastReroute = now
-        voice.say("Recalculating")
+        if (!offAnnounced) { offAnnounced = true; voice.say("Recalculating") } // once per time off the route, not every few seconds
         computeRoute(destX, destZ, destName, announce = false, reroute = true)
     }
 
     private fun cancelRoute() {
-        resumeSet = false; destIsPoi = false
+        resumeSet = false; destIsPoi = false; destIsJob = false; mapView.flagOn = false
         waypoints.clear(); resumeStops.clear(); afterM = 0f; afterS = 0f; syncStops()
         nav?.clear()
         routeEtaGameMin = -1f
@@ -752,7 +781,7 @@ class MainActivity : Activity() {
         infoText.text = "No route"
     }
 
-    private fun computeRoute(x: Float, z: Float, name: String, announce: Boolean, isPoi: Boolean = false, reroute: Boolean = false, keepStops: Boolean = false) {
+    private fun computeRoute(x: Float, z: Float, name: String, announce: Boolean, isPoi: Boolean = false, reroute: Boolean = false, keepStops: Boolean = false, isJob: Boolean = false) {
         val r = router; val n = nav; val m = map
         if (r == null || n == null || m == null) { toast("Map not loaded yet"); return }
         if (truck?.connected != true) { toast("Start the game first - no truck position yet"); return }
@@ -768,7 +797,7 @@ class MainActivity : Activity() {
                 resumeSet = false
                 if (!keepStops) waypoints.clear()
             }
-            destIsPoi = isPoi
+            destIsPoi = isPoi; destIsJob = isJob; endHinted = false; stillSinceMs = 0L
         }
         destX = x; destZ = z; destName = name; hasDest = true
         if (!reroute && !isPoi && !keepStops) startLabel = place.removePrefix("Near ").ifEmpty { "Start" }
@@ -817,7 +846,8 @@ class MainActivity : Activity() {
                 }
                 ui.post {
                     n.distScale = distScale
-                    n.arriveWord = if (legIsStop) "your waypoint" else "your destination"
+                    n.arriveWord = if (legIsStop) "your waypoint" else if (destIsJob) "the destination area" else "your destination"
+                    mapView.flagOn = true; mapView.flagX = x; mapView.flagZ = z
                     afterM = am; afterS = asec
                     n.setRoute(res, remaining)
                     mapView.routePts = pts; mapView.routeLift = lift; mapView.routeEdgePt = starts; mapView.routeIdx = 0
@@ -849,7 +879,7 @@ class MainActivity : Activity() {
         val co = m.findCompany(t.destCityId, t.destCompanyId)
         if (co != null) {
             val label = if (t.destCompany.isNotEmpty()) "${t.destCompany}, ${t.destCity}" else t.destCity
-            computeRoute(co.x, co.z, label, announce = true)
+            computeRoute(co.x, co.z, label, announce = true, isJob = true)
             return
         }
         val c = m.findCity(t.destCityId)
@@ -858,7 +888,7 @@ class MainActivity : Activity() {
             toast("Job destination '${t.destCity}' (id '${t.destCityId}') is not on the loaded map")
             return
         }
-        computeRoute(c.x, c.z, c.name, announce = true)
+        computeRoute(c.x, c.z, c.name, announce = true, isJob = true)
     }
 
     private var lastJobKey = ""
@@ -1432,7 +1462,8 @@ class MainActivity : Activity() {
     private var lastLanePush = 0L
 
     /** Shows the lane panel and relays it to the companion so the PC lane overlay can display it as well. */
-    private fun setLaneUi(lanes: List<Lane>?, caption: String = "") {
+    private fun setLaneUi(lanesIn: List<Lane>?, caption: String = "") {
+        val lanes = if (showLanes) lanesIn else null
         laneView.setLanes(lanes, caption)
         val arr = org.json.JSONArray()
         if (lanes != null) for (l in lanes) {
@@ -1973,12 +2004,15 @@ class MainActivity : Activity() {
         val ferryBox = CheckBox(this).apply { text = "Avoid ferries and car trains (some places may become unreachable)"; isChecked = avoidFerries }
         box.addView(ferryBox)
         box.addView(button("Clear avoided roads (${avoidPoints.size})") { clearAvoid() })
+        val laneBox = CheckBox(this).apply { text = "Show lane guidance (the lane panel on the map)"; isChecked = showLanes }
+        box.addView(laneBox)
         box.addView(hostEdit); box.addView(realBox); box.addView(scaleEdit); box.addView(voiceBox); box.addView(outGroup); box.addView(testBtn); box.addView(help)
         fun save() {
             host = hostEdit.text.toString()
             val sc = scaleEdit.text.toString().toFloatOrNull()
             if (sc != null && sc > 0f) simScale = sc
             realDist = realBox.isChecked
+            showLanes = laneBox.isChecked; if (!showLanes) setLaneUi(null)
             nav?.distScale = distScale
             voice.enabled = voiceBox.isChecked
             val ferryChanged = ferryBox.isChecked != avoidFerries

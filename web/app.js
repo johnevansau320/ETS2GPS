@@ -18,6 +18,7 @@ let simScale = ls.get('scale', 19), realDist = ls.get('real', false);
 let distScale = realDist ? 1 : simScale;   // what map metres are multiplied by for display: 1 = real, simScale = game (Sim)
 let avoidFerries = ls.get('ferries', false);
 let hasDest = false, destX = 0, destZ = 0, destName = '', destIsPoi = false;
+let offAnnounced = false, destIsJob = false, endHinted = false, stillSince = 0;
 let resume = null; // {x,z,name,stops} while a POI detour is active
 let waypoints = [];
 let afterM = 0, afterS = 0, startLabel = 'Start';
@@ -283,7 +284,10 @@ function navTick() {
     computeRoute(r.x, r.z, r.name, { keepStops: true });
     return;
   }
+  if (st.arrived && destIsJob && holdAtRouteEnd(n)) return;
   if (st.arrived) {
+    if (destIsJob) voice.say('You have arrived at ' + destName);
+    mapView.flagOn = false;
     $('info').textContent = 'Arrived at ' + destName;
     setBannerMessage('You have arrived'); clearManeuver();
     n.clear(); mapView.routePts = new Float32Array(0); mapView.routeEdgePt = new Int32Array(0); mapView.nextManeuver = null;
@@ -304,9 +308,30 @@ function navTick() {
   const clock = etaClock(gameMin);
   const label = waypoints.length ? destName + ' (via ' + waypoints.length + ' stop' + (waypoints.length > 1 ? 's' : '') + ', next: ' + waypoints[0].name + ')' : destName;
   $('info').textContent = label + '\n' + n.shortDistance(totM) + ' · Real ' + formatDuration(realMin) + ' · Sim ' + formatDuration(gameMin) + (clock ? ' · Arrive ' + clock : '');
+  if (!st.offRoute) offAnnounced = false;
   if (st.offRoute) rerouteIfNeeded();
 }
 const laneHidden = () => tripOpen;
+
+/**
+ * The mapped road network often ends well short of a company's gate (the game's own route goes on to the gate). While the game still reports a long way
+ * to go for the job, keep the route and the flag on the map and tell the driver to carry on, instead of declaring the arrival at the end of the mapped route.
+ */
+function holdAtRouteEnd(n) {
+  const t = truck;
+  if (!t || !t.destCityId) return false; // job delivered or cancelled: arrived
+  const navKm = t.detail ? t.detail.navDistanceKm : 0;
+  const gameM = navKm > 0.001 ? navKm * 1000 : Math.hypot(motion.x - destX, motion.z - destZ) * simScale;
+  const now = performance.now();
+  if (motion.speedMps < 0.5) { if (!stillSince) stillSince = now; } else stillSince = 0;
+  if (gameM < 150 || (stillSince && now - stillSince > 25000)) return false;
+  if (!endHinted) { endHinted = true; voice.say('The mapped route ends here. Follow the flag to the drop off point.'); }
+  setBannerMessage('Mapped route ends here - follow the flag');
+  clearManeuver(); setLanes(null);
+  $('info').textContent = destName + '\nTo the destination: about ' + n.shortDistance(gameM / Math.max(1, simScale)) + " (the game's route)";
+  offAnnounced = false;
+  return true;
+}
 
 /** Learns how fast the truck really travels compared with the router's speeds, so the ETA follows reality. */
 function updatePace(n) {
@@ -323,13 +348,13 @@ function rerouteIfNeeded() {
   const now = performance.now();
   if (!hasDest || routing || now - lastReroute < 4000) return;
   lastReroute = now;
-  voice.say('Recalculating');
+  if (!offAnnounced) { offAnnounced = true; voice.say('Recalculating'); } // once per time off the route, not every few seconds
   computeRoute(destX, destZ, destName, { reroute: true });
 }
 function rerouteForModeChange() { if (hasDest && nav && nav.active && !routing) computeRoute(destX, destZ, destName, { reroute: true }); }
 
 function cancelRoute() {
-  resume = null; destIsPoi = false; waypoints = []; afterM = 0; afterS = 0; syncStops();
+  resume = null; destIsPoi = false; destIsJob = false; mapView.flagOn = false; waypoints = []; afterM = 0; afterS = 0; syncStops();
   if (nav) nav.clear();
   routeEtaGameMin = -1; routeRemainingM = -1; lastNextText = ''; paceRatio = 1; hasDest = false;
   mapView.routePts = new Float32Array(0); mapView.routeEdgePt = new Int32Array(0); mapView.nextManeuver = null;
@@ -349,7 +374,7 @@ function computeRoute(x, z, name, opts = {}) {
       if (hasDest && !destIsPoi) resume = { x: destX, z: destZ, name: destName, stops: waypoints.slice() };
       waypoints = [];
     } else { resume = null; if (!opts.keepStops) waypoints = []; }
-    destIsPoi = !!opts.isPoi;
+    destIsPoi = !!opts.isPoi; destIsJob = !!opts.isJob; endHinted = false; stillSince = 0;
   }
   destX = x; destZ = z; destName = name; hasDest = true;
   if (!opts.reroute && !opts.isPoi && !opts.keepStops) startLabel = place.replace(/^Near /, '') || 'Start';
@@ -383,7 +408,8 @@ function computeRoute(x, z, name, opts = {}) {
       let p = 0;
       res.edges.forEach((de, i) => { starts[i] = p; for (let k = 0; k < m.deCount(de); k++) { pts[p * 2] = m.deX(de, k); pts[p * 2 + 1] = m.deZ(de, k); lift[p] = Math.round(m.deLift(de, k) * 2); p++; } });
       n.distScale = distScale;
-      n.arriveWord = legIsStop ? 'your waypoint' : 'your destination';
+      n.arriveWord = legIsStop ? 'your waypoint' : destIsJob ? 'the destination area' : 'your destination';
+      mapView.flagOn = true; mapView.flagX = x; mapView.flagZ = z;
       afterM = am; afterS = asec;
       n.setRoute(res, remaining);
       mapView.routePts = pts; mapView.routeLift = lift; mapView.routeEdgePt = starts; mapView.routeIdx = 0;
@@ -400,10 +426,10 @@ function computeRoute(x, z, name, opts = {}) {
 
 function navigateToJob(t) {
   const co = map.findCompany(t.destCityId, t.destCompanyId);
-  if (co) { computeRoute(co.x, co.z, t.destCompany ? t.destCompany + ', ' + t.destCity : t.destCity, { announce: true }); return; }
+  if (co) { computeRoute(co.x, co.z, t.destCompany ? t.destCompany + ', ' + t.destCity : t.destCity, { announce: true, isJob: true }); return; }
   const c = map.findCity(t.destCityId) || map.cities.find((c) => c.key === normalizeName(t.destCity));
   if (!c) { toast("Job destination '" + t.destCity + "' is not on the loaded map"); return; }
-  computeRoute(c.x, c.z, c.name, { announce: true });
+  computeRoute(c.x, c.z, c.name, { announce: true, isJob: true });
 }
 function routeToJob() {
   if (!map) { toast('Map not loaded yet'); return; }

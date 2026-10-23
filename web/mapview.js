@@ -9,6 +9,7 @@ class MapView {
     this.canvas = canvas;
     this.map = null;
     this.truckX = 0; this.truckZ = 0; this.bearing = 0; this.hasFix = false;
+    this.flagOn = false; this.flagX = 0; this.flagZ = 0; // the finishing flag at the destination
     this.routePts = new Float32Array(0); this.routeEdgePt = new Int32Array(0); this.routeIdx = 0; this.routeLift = new Uint8Array(0); this.planLift = new Uint8Array(0);
     this.stops = []; // [{x,z}]
     this.nextManeuver = null;
@@ -309,6 +310,20 @@ class MapView {
       c.fillStyle = fg; c.fillText(txt, sx, sy + 1); c.textBaseline = 'alphabetic';
     };
     const visible = (q, mx, my) => !((tilted && q[2] < 0.3) || q[0] < -mx || q[0] > W + mx || q[1] < -my || q[1] > H + my);
+
+    // finishing flag at the destination (the end of the mapped road can be well short of it)
+    if (this.flagOn && !this.planMode) {
+      const q = proj(this.flagX, this.flagZ);
+      if (visible(q, 80, 80)) at(q[0], q[1], fs(q[2]), () => {
+        c.fillStyle = 'rgba(0,0,0,0.35)'; c.beginPath(); c.ellipse(q[0], q[1] + 1, 7, 3, 0, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = '#fff'; c.lineWidth = 3.4; c.lineCap = 'round'; c.beginPath(); c.moveTo(q[0], q[1]); c.lineTo(q[0], q[1] - 50); c.stroke();
+        const x0 = q[0] + 1.5, y0 = q[1] - 50, cell = 7;
+        c.fillStyle = '#fff'; c.fillRect(x0, y0, cell * 5, cell * 4);
+        c.fillStyle = '#000';
+        for (let ix = 0; ix < 5; ix++) for (let iy = 0; iy < 4; iy++) if ((ix + iy) % 2 === 0) c.fillRect(x0 + ix * cell, y0 + iy * cell, cell, cell);
+        c.strokeStyle = '#000'; c.lineWidth = 1.4; c.strokeRect(x0, y0, cell * 5, cell * 4);
+      });
+    }
 
     // big area (city) names
     if (true) { // area (city) names stay on at every zoom level

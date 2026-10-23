@@ -29,6 +29,7 @@ class MapView(ctx: Context) : View(ctx) {
     var speedMps = 0f
     var hasFix = false
 
+    var flagOn = false; var flagX = 0f; var flagZ = 0f // the finishing flag at the destination
     var routePts = FloatArray(0) // x,z pairs
     var routeLift = ByteArray(0) // per route point: height above the road it crosses (0.5 m units)
     var stops = FloatArray(0) // waypoint positions, x,z pairs (drawn as numbered markers)
@@ -296,6 +297,9 @@ class MapView(ctx: Context) : View(ctx) {
     private val cityShadow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 10, 12, 20); textAlign = Paint.Align.CENTER; isFakeBoldText = true }
     private val cityText = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(225, 236, 224, 228); textAlign = Paint.Align.CENTER; isFakeBoldText = true }
     private val borderRed = Color.rgb(200, 40, 40)
+    private val flagPole = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; strokeCap = Paint.Cap.ROUND }
+    private val flagBlack = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
+    private val flagEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.STROKE }
     private val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     /** Road segments per class and depth band, ready for drawLines. */
@@ -475,6 +479,24 @@ class MapView(ctx: Context) : View(ctx) {
         }
 
         fun visible(mx: Float, my: Float) = !((tilted && qs < 0.3f) || qx < -mx || qx > width + mx || qy < -my || qy > height + my)
+
+        // finishing flag at the destination (the end of the mapped road can be well short of it)
+        if (flagOn && !planMode) {
+            proj(flagX, flagZ)
+            if (visible(80f * d, 80f * d)) {
+                val x = qx; val y = qy
+                scaled(x, y, fscale(qs)) {
+                    canvas.drawOval(x - 7f * d, y - 2f * d, x + 7f * d, y + 4f * d, poiShadow)
+                    flagPole.strokeWidth = 3.4f * d
+                    canvas.drawLine(x, y, x, y - 50f * d, flagPole)
+                    val x0 = x + 1.5f * d; val y0 = y - 50f * d; val cell = 7f * d
+                    canvas.drawRect(x0, y0, x0 + cell * 5, y0 + cell * 4, whitePaint)
+                    for (ix in 0 until 5) for (iy in 0 until 4) if ((ix + iy) % 2 == 0) canvas.drawRect(x0 + ix * cell, y0 + iy * cell, x0 + (ix + 1) * cell, y0 + (iy + 1) * cell, flagBlack)
+                    flagEdge.strokeWidth = 1.4f * d
+                    canvas.drawRect(x0, y0, x0 + cell * 5, y0 + cell * 4, flagEdge)
+                }
+            }
+        }
 
         // big area (city) names
         if (true) { // area (city) names stay on at every zoom level
