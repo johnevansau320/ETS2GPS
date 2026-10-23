@@ -231,7 +231,7 @@ let lastLaneJson = '', lastLanePush = 0;
 function pushLanes(lanes, caption) {
   const body = JSON.stringify({ lanes: lanes ? lanes.map((l) => ({ a: Number.isNaN(l.angleDeg) ? null : Math.round(l.angleDeg * 10) / 10, p: !!l.preferred, alt: l.altDeg === null || l.altDeg === undefined ? null : Math.round(l.altDeg * 10) / 10 })) : null, caption: caption || '' });
   const now = performance.now();
-  if (body === lastLaneJson && now - lastLanePush < 2000) return;
+  if (body === lastLaneJson && (!lanes || now - lastLanePush < 2000)) return; // "no lanes" is sent once, not repeated (a repeat would blank the PC's lanes)
   if (lanes && body !== lastLaneJson && now - lastLanePush < 400) return;
   lastLaneJson = body; lastLanePush = now;
   fetch('/lanes', { method: 'POST', body }).catch(() => {});

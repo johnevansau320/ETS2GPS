@@ -1472,7 +1472,7 @@ class MainActivity : Activity() {
         }
         val body = org.json.JSONObject().put("lanes", if (lanes == null) org.json.JSONObject.NULL else arr).put("caption", caption).toString()
         val now = SystemClock.elapsedRealtime()
-        if (body == lastLaneJson && now - lastLanePush < 2000L) return
+        if (body == lastLaneJson && (lanes == null || now - lastLanePush < 2000L)) return // "no lanes" is sent once, not repeated (a repeat would blank the PC's lanes)
         if (lanes != null && body != lastLaneJson && now - lastLanePush < 400L) return
         lastLaneJson = body; lastLanePush = now
         val h = host

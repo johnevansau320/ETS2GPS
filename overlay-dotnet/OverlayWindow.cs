@@ -75,12 +75,20 @@ namespace LaneOverlay
 
         // --------------------------------------------------------------------------- state
 
+        // a short gap (a missed poll, a momentary "no lanes") keeps the last panel on screen instead of blinking it off and on
+        (IReadOnlyList<Lane> Lanes, string Caption)? lastGood; long lastGoodAt;
+        const long HoldMs = 1500;
+
         (IReadOnlyList<Lane> Lanes, string Caption)? Current()
         {
             var d = demo ? DemoState : data;
-            if (d?.Lanes == null || d.Lanes.Count == 0) return null;
-            if (d.Age is not double age || age > StaleSeconds) return null;
-            return (d.Lanes, d.Caption);
+            if (d?.Lanes != null && d.Lanes.Count > 0 && d.Age is double age && age <= StaleSeconds)
+            {
+                lastGood = (d.Lanes, d.Caption); lastGoodAt = Environment.TickCount64;
+                return lastGood;
+            }
+            if (lastGood != null && Environment.TickCount64 - lastGoodAt < HoldMs) return lastGood;
+            return null;
         }
 
         void Refresh()
