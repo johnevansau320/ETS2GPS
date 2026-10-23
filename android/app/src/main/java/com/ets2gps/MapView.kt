@@ -549,6 +549,7 @@ class MapView(ctx: Context) : View(ctx) {
                         pillText.textSize = 22f * d
                         val hw = pillText.measureText(country) / 2 + 8f * d; val hgt = 14f * d
                         rect.set(x - hw, y + 36f * d, x + hw, y + 36f * d + 2 * hgt)
+                        shieldPaint.color = Color.WHITE // the shared paint still holds the last road-shield colour from the previous frame
                         canvas.drawRoundRect(rect, 6f * d, 6f * d, shieldPaint)
                         canvas.drawText(country, x, y + 36f * d + hgt + 7.5f * d, pillText)
                         pillText.textSize = sv
