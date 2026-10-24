@@ -901,6 +901,10 @@ function cruiseCall(on) {
 }
 $('btnCruise').onclick = () => cruiseCall(!cruiseOn);
 cruiseCall();
+// the Windows app that serves this page knows whether a newer version exists
+fetch('/update', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((j) => {
+  if (j && j.available) toast('Update ' + j.version + ' of the Windows app is available (you have ' + j.current + ')');
+}).catch(() => {});
 function updateVoiceButton() { $('btnVoice').textContent = voice.enabled ? 'Voice on' : 'Voice off'; }
 
 // ---------------------------------------------------------------------------------- wiring --

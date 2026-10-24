@@ -134,6 +134,55 @@ class MainActivity : Activity() {
     private var showLanes: Boolean // the lane guidance panel can be switched off in Settings
         get() = prefs.getBoolean("lanes", true)
         set(v) { prefs.edit().putBoolean("lanes", v).apply() }
+    // ---- update check: about once a day, nothing is downloaded; Settings offers the release page
+    private var checkUpdates: Boolean
+        get() = prefs.getBoolean("updates", true)
+        set(v) { prefs.edit().putBoolean("updates", v).apply() }
+    private var lastUpdateCheck: Long
+        get() = prefs.getLong("update_last", 0L)
+        set(v) { prefs.edit().putLong("update_last", v).apply() }
+    private var skippedVersion: String
+        get() = prefs.getString("update_skipped", "") ?: ""
+        set(v) { prefs.edit().putString("update_skipped", v).apply() }
+    private var update: UpdateInfo? = null
+    private val appVersion: String
+        get() = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
+
+    private fun setUpdate(u: UpdateInfo?, announce: Boolean) {
+        val shown = if (u != null && u.latest == skippedVersion) null else u
+        val isNew = shown != null && update?.latest != shown.latest
+        update = shown
+        if (shown != null && announce && isNew) toast("Update ${shown.latest} available - see Settings > Updates")
+    }
+
+    /** Runs the check on the background thread; [force] ignores the once-a-day limit and the skipped version. [done] runs on the UI thread with an error text or null. */
+    private fun checkForUpdate(force: Boolean, done: ((String?) -> Unit)? = null) {
+        if (!force) {
+            if (!checkUpdates) return
+            if (System.currentTimeMillis() - lastUpdateCheck < 20L * 3600 * 1000) return
+        }
+        bg.execute {
+            try {
+                val u = UpdateCheck.check(appVersion)
+                ui.post {
+                    lastUpdateCheck = System.currentTimeMillis()
+                    if (force) skippedVersion = ""
+                    setUpdate(u, announce = !force)
+                    done?.invoke(null)
+                }
+            } catch (e: Exception) {
+                ui.post { done?.invoke(e.message ?: "no connection") }
+            }
+        }
+    }
+
+    private fun updateStatus(): String =
+        update?.let { "Version ${it.latest} is available (you have $appVersion)." } ?: "You have version $appVersion."
+
+    private fun openPage(url: String) {
+        try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) } catch (e: Exception) { toast("No browser found") }
+    }
+
     private var afterM = 0f // distance / time of the legs after the one being driven
     private var afterS = 0f
     private var paceRatio = 1f // actual speed / speed the router assumed, smoothed (~90 s)
@@ -192,6 +241,7 @@ class MainActivity : Activity() {
             View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
             View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION)
         Choreographer.getInstance().postFrameCallback(frame)
+        checkForUpdate(force = false)
     }
 
     override fun onPause() {
@@ -2041,6 +2091,24 @@ class MainActivity : Activity() {
         box.addView(button("Clear avoided roads (${avoidPoints.size})") { clearAvoid() })
         val laneBox = CheckBox(this).apply { text = "Show lane guidance (the lane panel on the map)"; isChecked = showLanes }
         box.addView(laneBox)
+        val updBox = CheckBox(this).apply { text = "Look for new versions automatically (about once a day; nothing is downloaded)"; isChecked = checkUpdates }
+        val updText = TextView(this).apply { text = updateStatus(); textSize = 13f }
+        lateinit var updOpen: Button
+        lateinit var updSkip: Button
+        fun refreshUpdate() {
+            updText.text = updateStatus()
+            val vis = if (update != null) View.VISIBLE else View.GONE
+            updOpen.visibility = vis; updSkip.visibility = vis
+        }
+        val updNow = button("Check for updates now") {
+            updText.text = "Checking..."
+            checkForUpdate(force = true) { err -> if (err != null) updText.text = "Could not reach GitHub: $err" else refreshUpdate() }
+        }
+        updOpen = button("Open the download page") { update?.let { openPage(it.pageUrl) } }
+        updSkip = button("Skip this version") { update?.let { skippedVersion = it.latest; setUpdate(it, announce = false); refreshUpdate() } }
+        refreshUpdate()
+        box.addView(TextView(this).apply { text = "Updates"; textSize = 14f; setTypeface(typeface, Typeface.BOLD) })
+        box.addView(updBox); box.addView(updText); box.addView(updNow); box.addView(updOpen); box.addView(updSkip)
         box.addView(hostEdit); box.addView(realBox); box.addView(scaleEdit); box.addView(voiceBox); box.addView(outGroup); box.addView(testBtn); box.addView(help)
         fun save() {
             host = hostEdit.text.toString()
@@ -2048,6 +2116,7 @@ class MainActivity : Activity() {
             if (sc != null && sc > 0f) simScale = sc
             realDist = realBox.isChecked
             showLanes = laneBox.isChecked; if (!showLanes) setLaneUi(null)
+            checkUpdates = updBox.isChecked
             nav?.distScale = distScale
             voice.enabled = voiceBox.isChecked
             val ferryChanged = ferryBox.isChecked != avoidFerries

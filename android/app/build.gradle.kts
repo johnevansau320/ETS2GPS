@@ -11,8 +11,8 @@ android {
         applicationId = "com.ets2gps"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 11101
+        versionName = "1.11.1"
     }
 
     buildTypes {
