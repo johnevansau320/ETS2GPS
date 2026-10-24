@@ -111,6 +111,7 @@ class MainActivity : Activity() {
     private var downloading = false
     private var destIsPoi = false
     private var offAnnounced = false
+    private val NEAR_DEST_M = 120.0 // map metres: this close to the destination the app stops recalculating
     private var destIsJob = false; private var endHinted = false; private var stillSinceMs = 0L
     private var resumeSet = false
     private var resumeX = 0f
@@ -642,7 +643,7 @@ class MainActivity : Activity() {
         } else limitText.visibility = View.INVISIBLE
         trackTrip(s, now)
         if (tripScreen.visibility == View.VISIBLE) updateTrip()
-        if (s.connected) { updateAltitude(s); checkHill(s); checkNewJob(s); checkAlerts(s); updatePlace(now); navTick() }
+        if (s.connected) { updateAltitude(s); checkHill(s); checkNewJob(s); checkJobEvents(s); checkAlerts(s); updatePlace(now); navTick() }
     }
 
     // ------------------------------------------------------------------------- navigation --
@@ -699,7 +700,7 @@ class MainActivity : Activity() {
         val label = if (waypoints.isEmpty()) destName else "$destName (via ${waypoints.size} stop${if (waypoints.size > 1) "s" else ""}, next: ${waypoints[0].name})"
         infoText.text = "$label\n${n.shortDistance(totM)} · Real ${formatDuration(realMin)} · Sim ${formatDuration(gameMin)}" +
             (if (clock.isNotEmpty()) " · Arrive $clock" else "")
-        if (!st.offRoute) offAnnounced = false
+        if (st.onRoute) offAnnounced = false // said again only after the truck has really been back on a route
         if (st.offRoute) rerouteIfNeeded()
     }
 
@@ -762,6 +763,11 @@ class MainActivity : Activity() {
     private fun rerouteIfNeeded() {
         val now = SystemClock.elapsedRealtime()
         if (!hasDest || routing.get() || now - lastReroute < 4000) return
+        // inside the destination's yard or compound there are no mapped roads: do not recalculate (or keep saying so) there
+        if (Math.hypot((motion.x - destX).toDouble(), (motion.z - destZ).toDouble()) < NEAR_DEST_M) return
+        // only recalculate once the truck is back on a mapped road (not while manoeuvring in a yard or compound)
+        val rt = router
+        if (rt != null && rt.snap(motion.x, motion.z, motion.bearing, 35f) == null) return
         lastReroute = now
         if (!offAnnounced) { offAnnounced = true; voice.say("Recalculating") } // once per time off the route, not every few seconds
         computeRoute(destX, destZ, destName, announce = false, reroute = true)
@@ -849,7 +855,7 @@ class MainActivity : Activity() {
                     n.arriveWord = if (legIsStop) "your waypoint" else if (destIsJob) "the destination area" else "your destination"
                     mapView.flagOn = true; mapView.flagX = x; mapView.flagZ = z
                     afterM = am; afterS = asec
-                    n.setRoute(res, remaining)
+                    n.setRoute(res, remaining, reroute)
                     mapView.routePts = pts; mapView.routeLift = lift; mapView.routeEdgePt = starts; mapView.routeIdx = 0
                     banner.setMessage(null)
                     if (announce) {
@@ -895,6 +901,35 @@ class MainActivity : Activity() {
     private var jobDialog: AlertDialog? = null
 
     /** Offers to navigate when the game reports a new job. */
+    // ---- the job ends: delivered (arrived) or cancelled (route no longer wanted)
+    private var evInit = false; private var evConn = false
+    private var pDelivered = false; private var pCancelled = false; private var pFinished = false; private var pOnJob = false
+
+    private fun checkJobEvents(t: TruckState) {
+        val delivered = t.jobDelivered && !pDelivered; val cancelled = t.jobCancelled && !pCancelled; val finished = t.jobFinished && !pFinished
+        val jobEnded = evConn && pOnJob && !t.onJob // the job vanished without an event we saw
+        val first = !evInit; evInit = true
+        pDelivered = t.jobDelivered; pCancelled = t.jobCancelled; pFinished = t.jobFinished; pOnJob = t.onJob; evConn = t.connected
+        if (first || !hasDest || !destIsJob) return
+        if (cancelled) {
+            voice.say("The job was cancelled. Route cleared.")
+            toast("Job cancelled - route cleared")
+            cancelRoute()
+        } else if (delivered || finished || jobEnded) finishRoute("Job complete")
+    }
+
+    /** The destination is reached (the route is over): same as arriving at the end of the route. */
+    private fun finishRoute(say: String) {
+        val n = nav ?: return
+        if (say.isNotEmpty()) voice.say(say)
+        mapView.flagOn = false
+        infoText.text = "Arrived at $destName"
+        banner.setMessage("You have arrived")
+        n.clear()
+        mapView.routePts = FloatArray(0); mapView.routeEdgePt = IntArray(0); mapView.nextManeuver = null; setLaneUi(null)
+        hasDest = false; destIsJob = false
+    }
+
     private fun checkNewJob(t: TruckState) {
         val m = map ?: return
         val key = if (t.destCityId.isEmpty()) "" else "${t.destCityId}/${t.destCompanyId}"

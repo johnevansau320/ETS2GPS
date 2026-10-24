@@ -23,6 +23,7 @@ class Maneuver(
 ) {
     var towards: String? = null // next town the route heads for after this maneuver
     var lanes: List<Lane>? = null // lane guidance for the approach, when the map has lane data
+    var exit = false // a ramp / exit road leaving a bigger road (spoken as "take the exit on the right")
 }
 
 class NavState(
@@ -32,6 +33,7 @@ class NavState(
     val remainingM: Float,
     val remainingS: Float,
     val offRoute: Boolean,
+    val onRoute: Boolean, // the truck is on the route right now (offRoute only turns true after a few seconds away from it)
     val arrived: Boolean,
     val speech: String?,
     val lanes: List<Lane>? = null, // lane guidance for the next junction that has lane data (not only turns)
@@ -76,7 +78,11 @@ class Navigator(private val map: MapData, private val router: Router) {
     }
 
     /** [remainingM] = how much of the first edge was still ahead when the route was computed. */
-    fun setRoute(res: RouteResult, remainingM: Float) {
+    // Prompts already given are remembered for a short while, so a recalculated route (the truck was off the road for a moment) does not read the same prompt out again.
+    private val memo = HashMap<String, Pair<Int, Long>>()
+    private fun memoKey(m: Maneuver) = "${m.turn}:${Math.round(m.x / 15f)}:${Math.round(m.z / 15f)}"
+
+    fun setRoute(res: RouteResult, remainingM: Float, reroute: Boolean = false) {
         route = res.edges
         cum = FloatArray(route.size + 1)
         secs = FloatArray(route.size + 1)
@@ -93,6 +99,11 @@ class Navigator(private val map: MapData, private val router: Router) {
         stage = IntArray(maneuvers.size)
         // do not announce maneuvers that are already behind the start position
         for (i in maneuvers.indices) if (maneuvers[i].atM < progress) stage[i] = 3
+        if (!reroute) memo.clear()
+        else {
+            val now = System.nanoTime() / 1_000_000
+            for (i in maneuvers.indices) memo[memoKey(maneuvers[i])]?.let { if (now - it.second < 90_000) stage[i] = max(stage[i], it.first) }
+        }
     }
 
     // ------------------------------------------------------------ maneuver generation --
@@ -118,11 +129,158 @@ class Navigator(private val map: MapData, private val router: Router) {
 
     private fun degDiff(a: Float, b: Float): Float = Math.toDegrees(Router.angleDiff(a, b).toDouble()).toFloat()
 
+    /** Total turning along a directed edge in degrees, + = right, NOT wrapped to +-180 (a 270 degree loop ramp counts as 270). */
+    private fun cumTurn(de: Int, win: Float = 3f): Float {
+        val n = map.deCount(de)
+        if (n < 3) return 0f
+        var tot = 0f; var prev = Float.NaN
+        var lx = map.deX(de, 0); var lz = map.deZ(de, 0)
+        for (i in 1 until n) {
+            val x = map.deX(de, i); val z = map.deZ(de, i)
+            if (hypot(x - lx, z - lz) < win && i != n - 1) continue
+            val h = Router.bearing(x - lx, z - lz)
+            if (!prev.isNaN()) tot += degDiff(h, prev)
+            prev = h; lx = x; lz = z
+        }
+        return tot
+    }
+
+    // ------------------------------------------------------- roundabouts the map builder did not flag --
+    // The builder flags a junction as a roundabout only when enough of its arms are connected to roads. A junction that has the shape of one anyway
+    // (every straight-on path is forced to bend around a central island) is treated as a roundabout here too.
+    private val geoRb = HashMap<Int, Boolean>()
+
+    private fun isRoundabout(jid: Int, entry: Int, alts: List<Pair<Int, Float>>): Boolean {
+        if (jid in map.roundabouts) return true
+        geoRb[jid]?.let { return it }
+        val nodes = HashSet<Int>(); nodes.add(entry)
+        for (a in alts) nodes.add(map.deTo(a.first))
+        var seenStraight = false; var rb = true
+        for (node in nodes) {
+            var i = 0
+            while (i < router.outCount(node) && rb) {
+                val j = router.outAt(node, i); i++
+                if (map.eJid[j shr 1] != jid) continue
+                val cnt = map.deCount(j)
+                if (cnt < 3) continue
+                if (abs(degDiff(tangent(j, true), tangent(j, false))) > 25f) continue // not carrying straight on
+                val x0 = map.deX(j, 0); val z0 = map.deZ(j, 0); val x1 = map.deX(j, cnt - 1); val z1 = map.deZ(j, cnt - 1)
+                val chord = hypot(x1 - x0, z1 - z0)
+                if (chord < 12f) continue
+                var bulge = 0f
+                for (q in 0 until cnt) bulge = max(bulge, abs((map.deX(j, q) - x0) * (z1 - z0) - (map.deZ(j, q) - z0) * (x1 - x0)) / chord)
+                if (bulge < 4f) rb = false else seenStraight = true // one straight path is really straight: an ordinary intersection
+            }
+        }
+        val result = rb && seenStraight && nodes.size >= 3
+        geoRb[jid] = result
+        return result
+    }
+
+    // ------------------------------------------------------- roundabouts made of ordinary roads --
+    // Many roundabouts are not one prefab: they are a ring of short curved road pieces (and small junction pieces) that the router sees as a
+    // closed loop of directed edges: at most 14 edges, 80 to 260 m around, curving the same way for about one full turn.
+
+    private class Ring(val edges: IntArray) { val set = edges.toHashSet() }
+    private val ringOf = HashMap<Int, Ring?>()
+    private val noRing = Ring(IntArray(0))
+
+    private fun findRing(de0: Int): Ring? {
+        ringOf[de0]?.let { return if (it === noRing) null else it }
+        var found: Ring? = null
+        val len0 = map.eLen[de0 shr 1]
+        if (len0 <= 120f && abs(cumTurn(de0)) >= 8f) {
+            val path = ArrayList<Int>(); path.add(de0)
+            found = ringDfs(map.deFrom(de0), de0, path, len0, cumTurn(de0))
+        }
+        ringOf[de0] = found ?: noRing
+        return found
+    }
+
+    /** The ring's junction points lie roughly on a circle (about 10 to 45 m across): a roundabout, not a block of streets. */
+    private fun circular(path: List<Int>): Boolean {
+        var cx = 0f; var cz = 0f
+        for (e in path) { val nd = map.deFrom(e); cx += map.nodeX[nd]; cz += map.nodeZ[nd] }
+        cx /= path.size; cz /= path.size
+        var mn = Float.MAX_VALUE; var mx = 0f; var sum = 0f
+        for (e in path) { val nd = map.deFrom(e); val r = hypot(map.nodeX[nd] - cx, map.nodeZ[nd] - cz); mn = min(mn, r); mx = max(mx, r); sum += r }
+        val mean = sum / path.size
+        return mean >= 10f && mean <= 45f && mx <= 1.45f * max(mn, 1f)
+    }
+
+    private fun ringDfs(start: Int, last: Int, path: ArrayList<Int>, length: Float, turn: Float): Ring? {
+        if (path.size > 14) return null
+        val cur = map.deTo(last)
+        val endH = tangent(last, true)
+        for (i in 0 until router.outCount(cur)) {
+            val nx = router.outAt(cur, i)
+            if (path.contains(nx)) continue
+            val len = length + map.eLen[nx shr 1]
+            if (len > 260f) continue
+            val dh = degDiff(tangent(nx, false), endH)
+            if (abs(dh) > 75f) continue
+            val t = turn + dh + cumTurn(nx)
+            path.add(nx)
+            var res: Ring? = null
+            if (map.deTo(nx) == start && path.size >= 3) {
+                val close = degDiff(tangent(path[0], false), tangent(nx, true))
+                val tot = t + close
+                if (len >= 80f && abs(tot) >= 300f && abs(tot) <= 470f) {
+                    val sg = if (tot > 0) 1f else -1f
+                    var ok = true; var curved = 0
+                    for (e in path) { val c = cumTurn(e) * sg; if (c < -12f) ok = false; if (c > 8f) curved++ }
+                    if (ok && curved >= (if (path.size > 8) 3 else 2) && circular(path)) res = Ring(path.toIntArray())
+                }
+            } else res = ringDfs(start, nx, path, len, t)
+            path.removeAt(path.size - 1)
+            if (res != null) return res
+        }
+        return null
+    }
+
+    private class Span(val k0: Int, val k1: Int, val ring: Ring)
+
+    /** Roundabouts on the route: first and last route index of the part that runs around a ring. */
+    private fun ringSpans(): List<Span> {
+        val spans = ArrayList<Span>()
+        val n = route.size
+        var k = 1
+        while (k < n - 1) {
+            val ring = findRing(route[k])
+            if (ring == null) { k++; continue }
+            var k1 = k
+            while (k1 + 1 < n - 1 && route[k1 + 1] in ring.set) k1++
+            var k0 = k
+            while (k0 - 1 >= 1 && route[k0 - 1] in ring.set) k0--
+            spans.add(Span(k0, k1, ring))
+            k = k1 + 1
+        }
+        return spans
+    }
+
     private fun buildManeuvers(): List<Maneuver> {
         val out = ArrayList<Maneuver>()
         val hints = ArrayList<LaneHint>()
         val n = route.size
+        // roundabouts built from ordinary road pieces: one instruction for the whole ring, nothing for the pieces inside it
+        val inRing = BooleanArray(n)
+        for (sp in ringSpans()) {
+            val k0 = sp.k0; val k1 = sp.k1; val ring = sp.ring
+            val k0e = if (k0 - 1 >= 1 && map.eJid[route[k0 - 1] shr 1] != 0 && route[k0 - 1] !in ring.set) k0 - 1 else k0
+            val k1e = if (k1 + 1 < n - 1 && map.eJid[route[k1 + 1] shr 1] != 0 && route[k1 + 1] !in ring.set) k1 + 1 else k1
+            val idx0 = ring.edges.indexOf(route[k0])
+            var count = 0
+            for (j in ring.edges.indices) {
+                val re = ring.edges[(idx0 + j) % ring.edges.size]
+                if (router.outCount(map.deTo(re)) >= 2) count++
+                if (re == route[k1]) break
+            }
+            for (q in k0e..k1e) inRing[q] = true
+            val ang = degDiff(tangent(route[k1e], true), tangent(route[k0e - 1], true))
+            out.add(Maneuver(Turn.ROUNDABOUT, cum[k0e], max(1, count), ang, map.deX(route[k0e], 0), map.deZ(route[k0e], 0)))
+        }
         for (k in 1 until n - 1) {
+            if (inRing[k]) continue
             val de = route[k]
             val e = de shr 1
             val jid = map.eJid[e]
@@ -141,7 +299,7 @@ class Navigator(private val map: MapData, private val router: Router) {
             val angle = chosen.second
             val straightest = alts.minByOrNull { abs(it.second) }!!
             val x = map.deX(de, 0); val z = map.deZ(de, 0)
-            if (jid in map.roundabouts) {
+            if (isRoundabout(jid, entry, alts)) {
                 val sorted = alts.sortedByDescending { it.second }
                 val no = sorted.indexOfFirst { it.first == de } + 1
                 out.add(Maneuver(Turn.ROUNDABOUT, cum[k], no, angle, x, z))
@@ -151,7 +309,15 @@ class Navigator(private val map: MapData, private val router: Router) {
             val right = angle > 0
             val before = out.size
             val laneList = lanesFor(alts, de)
+            // a ramp that loops more than half a turn (up to 270 degrees) ends up pointing the "other" way once the angle is wrapped to +-180:
+            // judge which way it LEAVES the road instead (compare its start with the straight-on road)
             when {
+                straightest.first != de && abs(cumTurn(de)) > 160f && abs(straightest.second) < 40f -> {
+                    val leavesRight = degDiff(tangent(de, false, 15f), tangent(straightest.first, false, 15f)) > 0f
+                    val mv = Maneuver(if (leavesRight) Turn.BEAR_RIGHT else Turn.BEAR_LEFT, cum[k], 0, angle, x, z)
+                    mv.exit = true
+                    out.add(mv)
+                }
                 a < 22f -> if (straightest.first != de) {
                     out.add(Maneuver(if (right) Turn.KEEP_RIGHT else Turn.KEEP_LEFT, cum[k], 0, angle, x, z))
                 }
@@ -163,6 +329,7 @@ class Navigator(private val map: MapData, private val router: Router) {
             // also hint junctions where the route just carries straight on but some lanes would leave it
             if (laneList != null && (out.size > before || laneList.any { !it.preferred })) hints.add(LaneHint(cum[k], laneList))
         }
+        out.sortBy { it.atM }
         val last = route[n - 1]
         val m = map.deCount(last)
         out.add(Maneuver(Turn.ARRIVE, cum[n], 0, 0f, map.deX(last, m - 1), map.deZ(last, m - 1)))
@@ -250,7 +417,7 @@ class Navigator(private val map: MapData, private val router: Router) {
 
     /** Feed the latest truck position; returns guidance for this instant. */
     fun update(x: Float, z: Float, speedMps: Float): NavState {
-        if (route.isEmpty()) return NavState(0f, null, null, 0f, 0f, false, false, null)
+        if (route.isEmpty()) return NavState(0f, null, null, 0f, 0f, false, false, false, null)
         // find where on the route we are (look a little behind and well ahead)
         var bestK = idx
         var bestD = Float.MAX_VALUE
@@ -292,11 +459,12 @@ class Navigator(private val map: MapData, private val router: Router) {
             }
             if (want > stage[ni]) {
                 stage[ni] = want
+                memo[memoKey(next)] = Pair(want, System.nanoTime() / 1_000_000)
                 speech = phrase(next, following, toNext, want)
             }
         }
         val hint = laneHints.firstOrNull { it.atM > progress - 12f }
-        return NavState(toNext, next, following, remaining, remS, offRoute, arrived, speech, hint?.lanes, if (hint != null) max(0f, hint.atM - progress) else 0f)
+        return NavState(toNext, next, following, remaining, remS, offRoute, rawDist <= OFF_ROUTE_M, arrived, speech, hint?.lanes, if (hint != null) max(0f, hint.atM - progress) else 0f)
     }
 
     /** What the route's last point is called in speech: "your destination", or "your waypoint" on a leg that ends at a stop. */
@@ -317,8 +485,8 @@ class Navigator(private val map: MapData, private val router: Router) {
     fun instruction(m: Maneuver): String = when (m.turn) {
         Turn.KEEP_LEFT -> "keep left"
         Turn.KEEP_RIGHT -> "keep right"
-        Turn.BEAR_LEFT -> "bear left"
-        Turn.BEAR_RIGHT -> "bear right"
+        Turn.BEAR_LEFT -> if (m.exit) "take the exit on the left" else "bear left"
+        Turn.BEAR_RIGHT -> if (m.exit) "take the exit on the right" else "bear right"
         Turn.TURN_LEFT -> "turn left"
         Turn.TURN_RIGHT -> "turn right"
         Turn.UTURN -> "make a U-turn"

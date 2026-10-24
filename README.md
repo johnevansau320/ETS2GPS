@@ -52,6 +52,7 @@ Pinch / +/- to zoom, double-tap resets zoom.
 
 ## Extras
 
+- **Better roundabouts and exits** (v1.11.0): roundabouts built from several pieces or not flagged by the map builder are announced as roundabouts; looping ramps say "take the exit on the right / left"; delivered or cancelled jobs end the route; prompts are not repeated after a recalculation and nothing is recalculated inside a yard.
 - **Job routes lead you to the gate** (v1.10.0): when the mapped route ends short of the company the app keeps the route on the map, says once to follow the flag to the drop-off point and shows the game's remaining distance; a chequered flag marks the destination. *Recalculating* is spoken once per time off the route, and lane guidance can be switched off in Settings (Windows and Android).
 
 - **Lane guidance**: while you drive the app shows, for the next junction that has lane data (turns, exits and straight-on junctions where some lanes would leave your route), one arrow per lane of your road (left to right) under the green bar. Green lanes are the ones to be in for your turn, white lanes show where they go, and a faint second arrow marks a lane that serves two directions. The lane data comes from the game's junction prefabs, so the map has to be rebuilt once (the companion does this automatically after you update it) and re-downloaded in the app.

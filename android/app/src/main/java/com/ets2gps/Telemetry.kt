@@ -52,6 +52,7 @@ class TruckState(
     val navEtaMin: Float, // the game's own ETA to its navigation target in game minutes, -1 unknown
     val gameTimeMin: Float, // in-game clock as minutes since day 1 00:00 (day 1 is a Monday), -1 unknown
     val detail: Detail? = null,
+    val onJob: Boolean = false, val jobDelivered: Boolean = false, val jobCancelled: Boolean = false, val jobFinished: Boolean = false, // the server's gameplay section
 )
 
 /**
@@ -139,6 +140,7 @@ class TelemetryClient(
             val nav = j.optJSONObject("navigation")
             val job = j.optJSONObject("job")
             val trailers = j.optJSONArray("trailers")
+            val gp = j.optJSONObject("gameplay")
             val attached = trailers != null && trailers.length() > 0 &&
                 trailers.optJSONObject(0)?.optBoolean("attached", false) == true
             return TruckState(
@@ -169,6 +171,8 @@ class TelemetryClient(
                 ),
                 navEtaMin = restMinutes(nav?.optString("estimatedTime", "") ?: ""),
                 gameTimeMin = clockMinutes(str(game, "time")),
+                onJob = gp?.optBoolean("onJob", false) ?: false, jobDelivered = gp?.optBoolean("jobDelivered", false) ?: false,
+                jobCancelled = gp?.optBoolean("jobCancelled", false) ?: false, jobFinished = gp?.optBoolean("jobFinished", false) ?: false,
                 detail = run {
                     val tr = trailers?.optJSONObject(0)
                     Detail(

@@ -259,7 +259,7 @@ function onTruck(s) {
   trackTrip(s, now);
   updateBannerJob();
   if (tripOpen) updateTrip();
-  if (s.connected) { updateAltitude(s); checkHill(s, now); checkNewJob(s); checkAlerts(s); updatePlace(now); navTick(); }
+  if (s.connected) { updateAltitude(s); checkHill(s, now); checkNewJob(s); checkJobEvents(s); checkAlerts(s); updatePlace(now); navTick(); }
 }
 
 // ------------------------------------------------------------------------- navigation --
@@ -308,7 +308,7 @@ function navTick() {
   const clock = etaClock(gameMin);
   const label = waypoints.length ? destName + ' (via ' + waypoints.length + ' stop' + (waypoints.length > 1 ? 's' : '') + ', next: ' + waypoints[0].name + ')' : destName;
   $('info').textContent = label + '\n' + n.shortDistance(totM) + ' · Real ' + formatDuration(realMin) + ' · Sim ' + formatDuration(gameMin) + (clock ? ' · Arrive ' + clock : '');
-  if (!st.offRoute) offAnnounced = false;
+  if (st.onRoute) offAnnounced = false; // said again only after the truck has really been back on a route
   if (st.offRoute) rerouteIfNeeded();
 }
 const laneHidden = () => tripOpen;
@@ -347,6 +347,10 @@ function updatePace(n) {
 function rerouteIfNeeded() {
   const now = performance.now();
   if (!hasDest || routing || now - lastReroute < 4000) return;
+  // inside the destination's yard or compound there are no mapped roads: do not recalculate (or keep saying so) there
+  if (Math.hypot(motion.x - destX, motion.z - destZ) < 120) return;
+  // only recalculate once the truck is back on a mapped road (not while manoeuvring in a yard or compound)
+  if (router && !router.snap(motion.x, motion.z, motion.bearing, 35)) return;
   lastReroute = now;
   if (!offAnnounced) { offAnnounced = true; voice.say('Recalculating'); } // once per time off the route, not every few seconds
   computeRoute(destX, destZ, destName, { reroute: true });
@@ -411,7 +415,7 @@ function computeRoute(x, z, name, opts = {}) {
       n.arriveWord = legIsStop ? 'your waypoint' : destIsJob ? 'the destination area' : 'your destination';
       mapView.flagOn = true; mapView.flagX = x; mapView.flagZ = z;
       afterM = am; afterS = asec;
-      n.setRoute(res, remaining);
+      n.setRoute(res, remaining, !!opts.reroute);
       mapView.routePts = pts; mapView.routeLift = lift; mapView.routeEdgePt = starts; mapView.routeIdx = 0;
       setBannerMessage(null);
       if (opts.announce) voice.say(legIsStop
@@ -438,6 +442,29 @@ function routeToJob() {
   if (!t.destCityId && !t.destCity) { toast('The game reports no active job'); return; }
   navigateToJob(t);
 }
+// ---- the job ends: delivered (arrived) or cancelled (route no longer wanted)
+let evInit = false, evConn = false, pDelivered = false, pCancelled = false, pFinished = false, pOnJob = false;
+function checkJobEvents(t) {
+  const delivered = t.jobDelivered && !pDelivered, cancelled = t.jobCancelled && !pCancelled, finished = t.jobFinished && !pFinished;
+  const jobEnded = evConn && pOnJob && !t.onJob; // the job vanished without an event we saw
+  const first = !evInit; evInit = true;
+  pDelivered = t.jobDelivered; pCancelled = t.jobCancelled; pFinished = t.jobFinished; pOnJob = t.onJob; evConn = t.connected;
+  if (first || !hasDest || !destIsJob) return;
+  if (cancelled) { voice.say('The job was cancelled. Route cleared.'); toast('Job cancelled - route cleared'); cancelRoute(); }
+  else if (delivered || finished || jobEnded) finishRoute('Job complete');
+}
+
+/** The destination is reached (the route is over): same as arriving at the end of the route. */
+function finishRoute(say) {
+  if (!nav) return;
+  if (say) voice.say(say);
+  mapView.flagOn = false;
+  $('info').textContent = 'Arrived at ' + destName;
+  setBannerMessage('You have arrived'); clearManeuver();
+  nav.clear(); mapView.routePts = new Float32Array(0); mapView.routeEdgePt = new Int32Array(0); mapView.nextManeuver = null;
+  hasDest = false; destIsJob = false; setLanes(null);
+}
+
 function checkNewJob(t) {
   if (!map) return;
   const key = t.destCityId ? t.destCityId + '/' + t.destCompanyId : '';

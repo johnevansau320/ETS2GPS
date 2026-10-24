@@ -45,6 +45,7 @@ function parseTruckState(j) {
   const num = (o, k) => (o && typeof o[k] === 'number' ? o[k] : 0);
   const game = j.game || {}, truck = j.truck || {}, pl = truck.placement || {}, nav = j.navigation || {}, job = j.job || {};
   const trailers = j.trailers || [];
+  const gp = j.gameplay || {};
   const tr = trailers[0] || {};
   const attached = trailers.length > 0 && tr.attached === true;
   const cap = num(truck, 'fuelCapacity');
@@ -68,6 +69,7 @@ function parseTruckState(j) {
     },
     navEtaMin: restMinutes(typeof nav.estimatedTime === 'string' ? nav.estimatedTime : ''),
     gameTimeMin: clockMinutes(str(game, 'time')),
+    onJob: gp.onJob === true, jobDelivered: gp.jobDelivered === true, jobCancelled: gp.jobCancelled === true, jobFinished: gp.jobFinished === true,
     detail: {
       truckName: (str(truck, 'make') + ' ' + str(truck, 'model')).trim(),
       odometerKm: num(truck, 'odometer'), fuelL: num(truck, 'fuel'), fuelCapL: cap,
