@@ -52,7 +52,7 @@ Pinch / +/- to zoom, double-tap resets zoom.
 
 ## Extras
 
-- **App icon** (v1.11.2): the Android app has its own launcher icon (the ETS2 GPS truck and pin artwork) instead of the system compass.
+- **App icon** (v1.11.2): the Android app has its own launcher icon (the ETS2 GPS truck and pin artwork) instead of the system compass. The Windows app (v1.7.2) and the web version (favicon, home-screen icon) use the same artwork.
 - **Update check** (v1.11.1): the Android app looks for a newer release on GitHub about once a day (**Settings > Updates**: open the download page, skip a version, check now, or switch it off). Nothing is downloaded or installed; it only opens the release page. The Windows app and the web version have the same notice.
 - **Better roundabouts and exits** (v1.11.0): roundabouts built from several pieces or not flagged by the map builder are announced as roundabouts; looping ramps say "take the exit on the right / left"; delivered or cancelled jobs end the route; prompts are not repeated after a recalculation and nothing is recalculated inside a yard.
 - **Job routes lead you to the gate** (v1.10.0): when the mapped route ends short of the company the app keeps the route on the map, says once to follow the flag to the drop-off point and shows the game's remaining distance; a chequered flag marks the destination. *Recalculating* is spoken once per time off the route, and lane guidance can be switched off in Settings (Windows and Android).
